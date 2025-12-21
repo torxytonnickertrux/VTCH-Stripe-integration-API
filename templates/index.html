@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stripe Integration API · Hero</title>
+<link href="/static/css/style.css" rel="stylesheet">
+</head>
+<body class="mono dark">
+<div class="tech-header">
+  <div class="header-left">
+    <span class="brand">Stripe Integration API</span>
+  </div>
+  <div class="header-right">
+    <span class="indicator">SYSTEM.ACTIVE</span>
+    <span class="indicator">API.VERSION {{ api_version }}</span>
+    <span class="indicator">ENV {{ environment }}</span>
+    <span class="indicator" id="latencyIndicator">LAT --ms</span>
+    <span class="indicator status"><span class="dot" id="statusDot"></span> STATUS.ONLINE</span>
+  </div>
+  <div class="header-grid"></div>
+</div>
+
+<section class="hero">
+  <canvas id="heroCanvas"></canvas>
+  <div class="overlay">
+    <div class="hero-frame">
+      <div class="hero-grid-tl"></div>
+      <div class="hero-grid-tr"></div>
+      <div class="hero-grid-bl"></div>
+      <div class="hero-grid-br"></div>
+      <h1 class="hero-title"><span id="heroTitle" class="glitch" data-text="Infra de Pagamentos para SaaS e Marketplaces">Infra de Pagamentos para SaaS e Marketplaces</span></h1>
+      <p class="hero-subtitle">API em Flask com Stripe Connect, Checkout e assinaturas. Robusta, auditável e pronta para produção.</p>
+      <p class="hero-manifest">Engenharia orientada a propósito. Baixo acoplamento, alta observabilidade. Segurança primeiro. Performance sem comprometer legibilidade.</p>
+      <div class="cta-row">
+        <a class="cta primary" href="/docs">Ver Documentação</a>
+        <a class="cta" href="/health">Testar API</a>
+        <a class="cta" href="/status">Status</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="tech-footer">
+  <div class="footer-indicators">
+    <span class="pulse"></span>
+    <span class="pulse"></span>
+    <span class="pulse"></span>
+    <canvas id="miniMap"></canvas>
+  </div>
+  <div class="footer-text">
+    <span>API.VERSION {{ api_version }}</span>
+    <span>ENV {{ environment }}</span>
+    <span>DOMAIN {{ domain }}</span>
+  </div>
+</footer>
+
+<script src="/static/js/hero-animation.js"></script>
+<script src="/static/js/home-ui.js"></script>
+</body>
+</html>

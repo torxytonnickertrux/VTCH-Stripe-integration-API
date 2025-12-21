@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Integração Stripe · Docs Interativas</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="/static/css/styles.css" rel="stylesheet">
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+  <div class="container">
+    <a class="navbar-brand" href="/">SaaS + Marketplace</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarNav">
+      <ul class="navbar-nav ms-auto">
+        <li class="nav-item"><a class="nav-link active" href="#docs">Documentação</a></li>
+        <li class="nav-item"><a class="nav-link" href="#api">API v1</a></li>
+        <li class="nav-item"><a class="nav-link" href="#quickstart">Quickstart</a></li>
+        <li class="nav-item"><a class="nav-link" href="#jwt">Autenticação</a></li>
+        <li class="nav-item"><a class="nav-link" href="#business">Modelo de Negócio</a></li>
+      </ul>
+    </div>
+  </div>
+ </nav>
+
+<header class="bg-primary text-white py-5">
+  <div class="container">
+    <h1 class="display-5">Documentação Interativa</h1>
+    <p class="lead">Plataforma financeira multi-tenant com Stripe Connect. Esta página é pública e não expõe dados sensíveis.</p>
+  </div>
+</header>
+
+<main class="container my-4">
+  <section id="docs" class="mb-5">
+    <div class="row">
+      <div class="col-lg-8">
+        <h2 class="h4">Visão Geral</h2>
+        <p>Backend em Flask com autenticação JWT, validação de ownership, rate limiting e integração Stripe (Checkout, Portal, Assinaturas, Connect). Banco de dados via SQLAlchemy com suporte a SQLite e MySQL.</p>
+        <div class="alert alert-info">Use os formulários abaixo para testar endpoints. Tokens e dados inseridos não são armazenados.</div>
+        <div class="alert alert-secondary">Se acessar por túnel e visualizar um aviso de segurança, utilize um cliente HTTP ou envie o header <code>ngrok-skip-browser-warning: true</code>.</div>
+      </div>
+      <div class="col-lg-4">
+        <div class="card">
+          <div class="card-body">
+            <h5 class="card-title">Sessão</h5>
+            <form id="tokenForm" class="mb-3">
+              <div class="mb-2">
+                <label class="form-label">Access Token</label>
+                <input type="password" class="form-control" id="accessTokenInput" placeholder="Bearer token">
+              </div>
+              <button class="btn btn-sm btn-primary" type="submit">Definir Token</button>
+              <span id="tokenStatus" class="ms-2 text-muted"></span>
+            </form>
+            <form id="loginForm">
+              <div class="mb-2">
+                <label class="form-label">Email</label>
+                <input type="email" class="form-control" id="loginEmail" placeholder="email@example.com" required>
+              </div>
+              <div class="mb-2">
+                <label class="form-label">Senha</label>
+                <input type="password" class="form-control" id="loginPassword" placeholder="••••••••" required>
+              </div>
+              <button class="btn btn-sm btn-outline-secondary" type="submit">Login</button>
+              <div id="loginResult" class="small mt-2"></div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="quickstart" class="mb-5">
+    <h2 class="h4">Quickstart</h2>
+    <p>Exemplos de autenticação e uso em cURL, JavaScript e Python.</p>
+    <div class="row row-cols-1 row-cols-lg-3 g-4">
+      <div class="col">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">cURL</h5>
+            <pre><code>curl -X POST {{ request.host_url }}/api/v1/auth/login \
+-H "Content-Type: application/json" \
+-d '{"email":"user@example.com","password":"secret"}'</code></pre>
+            <pre class="mt-3"><code>curl -X POST {{ request.host_url }}/api/v1/create-product \
+-H "Authorization: Bearer &lt;access&gt;" \
+-H "Content-Type: application/json" \
+-d '{"productName":"Plano Pro","productDescription":"Mensal","productPrice":2990,"accountId":"acct_123","recurringInterval":"month"}'</code></pre>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">JavaScript (Fetch)</h5>
+            <pre><code>const res = await fetch('/api/v1/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ email: 'user@example.com', password: 'secret' })
+});
+const { access_token } = await res.json();</code></pre>
+            <pre class="mt-3"><code>await fetch('/api/v1/create-checkout-session', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ accountId: 'acct_123', priceId: 'price_abc' })
+});</code></pre>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">Python (requests)</h5>
+            <pre><code>import requests
+r = requests.post('{{ request.host_url }}/api/v1/auth/login',
+                  json={'email':'user@example.com','password':'secret'})
+access = r.json()['access_token']</code></pre>
+            <pre class="mt-3"><code>requests.post('{{ request.host_url }}/api/v1/subscribe-to-platform',
+              headers={'Authorization': f'Bearer {access}'},
+              json={'accountId':'acct_123'})</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="api" class="mb-5">
+    <h2 class="h4">API v1</h2>
+    <div class="accordion" id="apiAccordion">
+      <div class="accordion-item">
+        <h2 class="accordion-header">
+          <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#authCollapse">
+            Autenticação
+          </button>
+        </h2>
+        <div id="authCollapse" class="accordion-collapse collapse show" data-bs-parent="#apiAccordion">
+          <div class="accordion-body">
+            <ul>
+              <li>POST <code>/api/v1/auth/register</code></li>
+              <li>POST <code>/api/v1/auth/login</code></li>
+              <li>POST <code>/api/v1/auth/refresh</code></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="accordion-item">
+        <h2 class="accordion-header">
+          <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#connectCollapse">
+            Stripe Connect
+          </button>
+        </h2>
+        <div id="connectCollapse" class="accordion-collapse collapse" data-bs-parent="#apiAccordion">
+          <div class="accordion-body">
+            <form id="createConnectAccountForm" class="row g-2">
+              <div class="col-auto">
+                <input type="email" class="form-control" id="connectEmail" placeholder="email vendedor" required>
+              </div>
+              <div class="col-auto">
+                <input type="url" class="form-control" id="connectStoreDomain" placeholder="https://loja.com">
+              </div>
+              <div class="col-auto">
+                <button class="btn btn-primary" type="submit">Criar conta</button>
+              </div>
+            </form>
+            <form id="createAccountLinkForm" class="row g-2 mt-3">
+              <div class="col-auto">
+                <input type="text" class="form-control" id="accountIdForLink" placeholder="acct_xxx" required>
+              </div>
+              <div class="col-auto">
+                <button class="btn btn-outline-primary" type="submit">Gerar onboarding link</button>
+              </div>
+            </form>
+            <form id="accountStatusForm" class="row g-2 mt-3">
+              <div class="col-auto">
+                <input type="text" class="form-control" id="accountIdForStatus" placeholder="acct_xxx" required>
+              </div>
+              <div class="col-auto">
+                <button class="btn btn-outline-secondary" type="submit">Consultar status</button>
+              </div>
+            </form>
+            <div id="connectResult" class="mt-3"></div>
+          </div>
+        </div>
+      </div>
+      <div class="accordion-item">
+        <h2 class="accordion-header">
+          <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#productsCollapse">
+            Produtos e Checkout
+          </button>
+        </h2>
+        <div id="productsCollapse" class="accordion-collapse collapse" data-bs-parent="#apiAccordion">
+          <div class="accordion-body">
+            <form id="createProductForm" class="row g-2">
+              <div class="col-md-3">
+                <input type="text" class="form-control" id="productName" placeholder="Nome" required>
+              </div>
+              <div class="col-md-4">
+                <input type="text" class="form-control" id="productDescription" placeholder="Descrição" required>
+              </div>
+              <div class="col-md-2">
+                <input type="number" class="form-control" id="productPrice" placeholder="Preço (centavos)" required>
+              </div>
+              <div class="col-md-2">
+                <input type="text" class="form-control" id="accountIdForProduct" placeholder="acct_xxx" required>
+              </div>
+              <div class="col-md-1">
+                <select class="form-select" id="recurringInterval">
+                  <option value="">one-time</option>
+                  <option value="month">mensal</option>
+                  <option value="year">anual</option>
+                </select>
+              </div>
+              <div class="col-12">
+                <button class="btn btn-success" type="submit">Criar produto e preço</button>
+              </div>
+            </form>
+            <form id="listProductsForm" class="row g-2 mt-3">
+              <div class="col-md-4">
+                <input type="text" class="form-control" id="accountIdForList" placeholder="acct_xxx" required>
+              </div>
+              <div class="col-md-2">
+                <button class="btn btn-outline-success" type="submit">Listar preços</button>
+              </div>
+            </form>
+            <form id="checkoutSessionForm" class="row g-2 mt-3">
+              <div class="col-md-3">
+                <input type="text" class="form-control" id="accountIdForCheckout" placeholder="acct_xxx" required>
+              </div>
+              <div class="col-md-3">
+                <input type="text" class="form-control" id="priceIdForCheckout" placeholder="price_xxx" required>
+              </div>
+              <div class="col-md-3">
+                <input type="url" class="form-control" id="successUrlForCheckout" placeholder="https://loja.com/confirmacao">
+              </div>
+              <div class="col-md-3">
+                <input type="url" class="form-control" id="cancelUrlForCheckout" placeholder="https://loja.com/carrinho">
+              </div>
+              <div class="col-md-3">
+                <button class="btn btn-warning" type="submit">Criar Checkout</button>
+              </div>
+            </form>
+            <form id="subscribePlatformForm" class="row g-2 mt-3">
+              <div class="col-md-4">
+                <input type="text" class="form-control" id="accountIdForPlatform" placeholder="acct_xxx" required>
+              </div>
+              <div class="col-md-4">
+                <input type="url" class="form-control" id="successUrlForPlatform" placeholder="https://loja.com/assinatura/ok">
+              </div>
+              <div class="col-md-4">
+                <input type="url" class="form-control" id="cancelUrlForPlatform" placeholder="https://loja.com/assinatura/cancelada">
+              </div>
+              <div class="col-md-2">
+                <button class="btn btn-outline-warning" type="submit">Assinar Plataforma</button>
+              </div>
+            </form>
+            <div id="productsResult" class="mt-3"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="jwt" class="mb-5">
+    <h2 class="h4">Autenticação JWT</h2>
+    <div class="row">
+      <div class="col-lg-6">
+        <ul>
+          <li><strong>Access</strong>: TTL padrão 15 min.</li>
+          <li><strong>Refresh</strong>: TTL padrão 7 dias, claim <code>type=refresh</code>.</li>
+          <li>Envie <code>Authorization: Bearer &lt;access&gt;</code> nas rotas protegidas.</li>
+          <li>Quando expirar, chame <code>/api/v1/auth/refresh</code> com o refresh.</li>
+          <li>Ownership: tokens podem carregar <code>stripe_account_id</code> associado.</li>
+        </ul>
+      </div>
+      <div class="col-lg-6">
+        <pre><code>POST /api/v1/auth/login
+{"email":"user@example.com","password":"secret"}
+→ {"access_token","refresh_token"}
+POST /api/v1/auth/refresh
+Authorization: Bearer &lt;refresh&gt;
+→ {"access_token"}</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="endpoint-ref" class="mb-5">
+    <h2 class="h4">Referência de Endpoints</h2>
+    <div class="table-responsive">
+      <table class="table table-sm">
+        <thead>
+          <tr><th>Método</th><th>URL</th><th>Auth</th><th>Descrição</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>POST</td><td>/api/v1/auth/register</td><td>Não</td><td>Cria usuário</td></tr>
+          <tr><td>POST</td><td>/api/v1/auth/login</td><td>Não</td><td>Gera access e refresh</td></tr>
+          <tr><td>POST</td><td>/api/v1/auth/refresh</td><td>Refresh</td><td>Emite novo access</td></tr>
+          <tr><td>POST</td><td>/api/v1/create-connect-account</td><td>Access</td><td>Cria conta Stripe</td></tr>
+          <tr><td>POST</td><td>/api/v1/create-account-link</td><td>Access</td><td>Gera link de onboarding</td></tr>
+          <tr><td>GET</td><td>/api/v1/account-status/&lt;account_id&gt;</td><td>Access</td><td>Status da conta</td></tr>
+          <tr><td>GET</td><td>/api/v1/products/&lt;account_id&gt;</td><td>Access</td><td>Lista produtos/preços</td></tr>
+          <tr><td>POST</td><td>/api/v1/create-product</td><td>Access</td><td>Cria produto e preço</td></tr>
+          <tr><td>POST</td><td>/api/v1/create-checkout-session</td><td>Access</td><td>Checkout conectado</td></tr>
+          <tr><td>POST</td><td>/api/v1/subscribe-to-platform</td><td>Access</td><td>Assinatura da plataforma</td></tr>
+          <tr><td>POST</td><td>/api/v1/create-portal-session</td><td>Access</td><td>Abre billing portal</td></tr>
+          <tr><td>POST</td><td>/webhook</td><td>Assinatura Stripe</td><td>Recebe eventos</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="webhooks" class="mb-5">
+    <h2 class="h4">Webhooks</h2>
+    <div class="row row-cols-1 row-cols-lg-2 g-4">
+      <div class="col">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">Python</h5>
+            <pre><code>import stripe
+endpoint_secret = "whsec_..."
+payload = request.data
+sig_header = request.headers.get("stripe-signature")
+try:
+  event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
+except stripe.error.SignatureVerificationError:
+  return {"error":"invalid_signature"}, 400</code></pre>
+            <h6 class="mt-3">Configuração de Endpoint (Plataforma)</h6>
+            <p>Defina um único endpoint em <code>/webhook</code> no Stripe Dashboard e ative "Listen to events from connected accounts". Roteie usando <code>event.account</code>.</p>
+            <h6>Configuração de Endpoint (Por Loja)</h6>
+            <p>Cada loja pode criar seu próprio endpoint com URL única (ex.: <code>/webhook/acct_123</code>). É necessário manter o <em>signing secret</em> por loja.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">Node.js</h5>
+            <pre><code>const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+const payload = req.rawBody;
+const sig = req.headers['stripe-signature'];
+let event;
+try {
+  event = stripe.webhooks.constructEvent(payload, sig, endpointSecret);
+} catch (err) {
+  return res.status(400).json({ error: 'invalid_signature' });
+}</code></pre>
+            <h6 class="mt-3">Roteamento Multi-Loja</h6>
+            <pre><code>// Exemplo de roteamento
+if (event.account) {
+  // buscar loja/usuário por accountId = event.account
+  // aplicar liberação/atualização de pedido para essa loja
+}</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mt-3">
+      <ul>
+        <li>Eventos comuns: <code>checkout.session.completed</code>, <code>invoice.paid</code>, <code>customer.subscription.updated</code>, <code>checkout.session.async_payment_failed</code>.</li>
+        <li>Idempotência por <code>event_id</code> para evitar processamento duplicado.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="post-checkout" class="mb-5">
+    <h2 class="h4">Liberação Pós-Checkout</h2>
+    <p>Utilize o evento <code>checkout.session.completed</code> como gatilho para liberar o produto/serviço.</p>
+    <div class="row row-cols-1 row-cols-lg-2 g-4">
+      <div class="col">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">Criando Checkout com Contexto</h5>
+            <pre><code>// Inclua metadados para correlação
+// metadata: { orderId, productId, userId }
+// client_reference_id: string
+</code></pre>
+            <pre><code>await fetch('/api/v1/create-checkout-session', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    accountId: 'acct_123',
+    priceId: 'price_abc',
+    metadata: { orderId: 'ord_789', productId: 'sku_456', userId: '42' },
+    clientReferenceId: 'ord_789'
+  })
+});</code></pre>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">Processando no Webhook</h5>
+            <pre><code># pseudo-fluxo
+if event.type == 'checkout.session.completed':
+  s = event['data']['object']
+  if s.get('payment_status') == 'paid':
+    account_id = event.get('account')   # loja
+    meta = s.get('metadata') or {}
+    order_id = meta.get('orderId') or s.get('client_reference_id')
+    # localizar loja/usuário por account_id
+    # marcar pedido como liberado / chamar API da loja
+    # garantir idempotência antes de efetivar</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="alert alert-secondary mt-3">
+      <ul class="mb-0">
+        <li>Use <code>metadata</code> e <code>client_reference_id</code> para correlação confiável.</li>
+        <li>Webhook é a fonte de verdade; não libere apenas com redirect.</li>
+        <li>No Connect, diferencie lojas usando <code>event.account</code>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="webhook-api" class="mb-5">
+    <h2 class="h4">Criar Webhook por API (Conta Conectada)</h2>
+    <div class="row row-cols-1 row-cols-lg-2 g-4">
+      <div class="col">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">Python</h5>
+            <pre><code>import os, stripe
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
+stripe.WebhookEndpoint.create(
+  url="https://seu-dominio.com/webhook",
+  enabled_events=["checkout.session.completed","invoice.paid","customer.subscription.updated"],
+  api_version="2023-10-16",
+  stripe_account="acct_123"
+)</code></pre>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">Node.js</h5>
+            <pre><code>const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY)
+await stripe.webhookEndpoints.create({
+  url: "https://seu-dominio.com/webhook",
+  enabled_events: ["checkout.session.completed","invoice.paid","customer.subscription.updated"],
+  api_version: "2023-10-16"
+}, {
+  stripeAccount: "acct_123"
+})</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="alert alert-secondary mt-3">
+      <ul class="mb-0">
+        <li>Ao criar por conta, armazene o <em>signing secret</em> de cada webhook para validação.</li>
+        <li>Alternativa: um único endpoint na plataforma com eventos de contas conectadas e roteamento por <code>event.account</code>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="liberar-pedido" class="mb-5">
+    <h2 class="h4">Esqueleto: liberarPedido(orderId, accountId)</h2>
+    <p>Fluxo de alto nível para integrar com a loja e liberar o produto após confirmação de pagamento.</p>
+    <div class="row">
+      <div class="col-lg-6">
+        <ol>
+          <li>Resolver loja/usuário por <code>accountId</code>.</li>
+          <li>Localizar pedido por <code>orderId</code>.</li>
+          <li>Idempotência: não liberar se já estiver liberado.</li>
+          <li>Confirmar pagamento pelo webhook ou consulta de sessão.</li>
+          <li>Atualizar status do pedido para liberado.</li>
+          <li>Integrar com a API da loja (entrega/acesso/licença).</li>
+          <li>Registrar audit trail de liberação.</li>
+        </ol>
+      </div>
+      <div class="col-lg-6">
+        <pre><code>def liberarPedido(order_id, account_id):
+    loja = find_store_by_account(account_id)
+    pedido = find_order_by_id(order_id)
+    if not pedido or getattr(pedido, "delivered", False):
+        return {"status": "noop"}
+    confirm = confirm_payment(order_id, account_id)
+    if not confirm.get("paid"):
+        return {"status": "pending"}
+    update_order_status(order_id, "delivered")
+    call_store_api(loja, order_id)
+    create_audit("order_released", order_id, account_id)
+    return {"status": "ok"}</code></pre>
+      </div>
+    </div>
+    <div class="alert alert-info mt-3">
+      <ul class="mb-0">
+        <li>Correlacione <code>orderId</code> via <code>metadata</code> ou <code>client_reference_id</code> do Checkout.</li>
+        <li>Para assinaturas, atualize acesso em <code>invoice.paid</code> ou <code>customer.subscription.updated</code>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="business" class="mb-5">
+    <h2 class="h4">Modelo de Negócio</h2>
+    <ul>
+      <li>Intermediação de pagamentos com Stripe Connect, multi-tenant por usuário.</li>
+      <li>Assinatura da plataforma via <code>PLATFORM_PRICE_ID</code>.</li>
+      <li>Taxa por transação via <code>application_fee_amount</code> em pagamentos e assinaturas.</li>
+      <li>Suporta one-time e assinaturas, com Checkout na conta conectada.</li>
+    </ul>
+  </section>
+
+  <section class="mb-5">
+    <h2 class="h4">Erros Comuns</h2>
+    <ul>
+      <li>401: token ausente ou inválido.</li>
+      <li>403: violação de ownership.</li>
+      <li>400: payload inválido ou recurso do Stripe rejeitado.</li>
+      <li>500: erro inesperado do servidor.</li>
+    </ul>
+  </section>
+
+  <section class="mb-5">
+    <h2 class="h4">Rate Limits</h2>
+    <ul>
+      <li>Padrão: <code>100/hour</code>.</li>
+      <li>Login: <code>10/minute</code>.</li>
+      <li>Checkout: <code>30/minute</code>.</li>
+      <li>Webhook: <code>300/minute</code>.</li>
+    </ul>
+  </section>
+
+  <section class="mb-5">
+    <div class="alert alert-warning">Esta página não expõe variáveis de ambiente nem segredos. Os tokens informados são usados apenas em memória da página.</div>
+  </section>
+</main>
+
+<footer class="bg-light py-3">
+  <div class="container text-center">
+    <small>© Integração Stripe · Docs Interativas</small>
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/js/docs.js"></script>
+</body>
+</html>
