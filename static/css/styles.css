@@ -1,3 +1,8 @@
 body { padding-bottom: 60px; }
 pre { background: #f8f9fa; padding: 12px; border-radius: 6px; }
 .card-title { font-weight: 600; }
+.skip-link { position: absolute; left: -999px; top: -999px; }
+.skip-link:focus { left: 12px; top: 12px; background: #000; color: #fff; padding: 8px 12px; border-radius: 4px; z-index: 1000; }
+.navbar .nav-link:focus-visible { outline: 2px solid #ffc107; outline-offset: 2px; }
+.btn:focus-visible { outline: 2px solid #0d6efd; outline-offset: 2px; }
+.form-control:focus { box-shadow: 0 0 0 .2rem rgba(13,110,253,.25); }

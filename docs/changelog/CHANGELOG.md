@@ -57,3 +57,39 @@
   - Webhook multi-loja: endpoint único com roteamento por `event.account` e alternativa por conta
   - Liberação pós-checkout: seção com exemplos de `metadata`/`client_reference_id` e pseudo-fluxo
   - Criação de webhook via API (Python/Node) para contas conectadas
+
+## 2025-12-21
+
+- Liberação Pós-Pagamento (HMAC)
+  - Despacho automático para lojas após `checkout.session.completed`
+  - Corpo enviado: `{"id","type","order_id","status":"pago"}`
+  - Assinatura HMAC-SHA256 com `PAYMENTS_EVENTS_SECRET` no cabeçalho `X_PAYMENTS_SIGNATURE`
+  - Idempotência mantida via `webhook_events`
+  - Persistência de envios em `store_dispatch` (auditoria mínima)
+
+- Fallback de URLs para Loja
+  - `successUrl`/`cancelUrl` agora podem ser omitidos
+  - Quando `storeDomain` está cadastrado na conta, usa:
+    - `success`: `https://loja/checkout/success?session_id={CHECKOUT_SESSION_ID}`
+    - `cancel`: `https://loja/checkout/cancel`
+
+- Docs Públicas
+  - Flag `DOCS_PUBLIC` para permitir acesso sem autenticação à página `/docs`
+  - Testes cobrindo modo público/privado
+
+- Configuração de Loja (.env)
+  - Novas variáveis: `PAYMENTS_EVENTS_SECRET`, `PAYMENTS_EVENTS_PATH`, `PAYMENTS_EVENTS_HEADER`
+  - `.env.example` atualizado com chaves e comentários
+
+- Modelos/DB
+  - Adicionada coluna `store_domain` em `stripe_accounts` (migração leve automática para SQLite)
+  - Novo modelo `store_dispatch` para registro de tentativas de notificação
+
+- Documentação
+  - `docs/API.md` atualizado com parâmetros `successUrl`/`cancelUrl` e guia de HMAC
+  - `docs/README.md` ampliado com variáveis de HMAC e docs públicas
+  - `templates/docs.html` com seção “Liberação para Lojas (HMAC)” e “Configuração (.env)”
+
+- Testes e Cobertura
+  - Testes de despacho HMAC e idempotência
+  - Suite com 38 testes OK; cobertura total ~91%

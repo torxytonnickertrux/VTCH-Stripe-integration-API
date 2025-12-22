@@ -50,6 +50,16 @@ class WebhookLog(Base):
     payload = Column(Text, nullable=False)
     received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+class StoreDispatch(Base):
+    __tablename__ = "store_dispatch"
+    id = Column(Integer, primary_key=True)
+    event_id = Column(String(255), unique=True, nullable=False)
+    account_id = Column(String(255), nullable=False)
+    order_id = Column(String(255), nullable=True)
+    status = Column(String(64), nullable=True)
+    attempts = Column(Integer, default=0, nullable=False)
+    delivered_at = Column(DateTime, nullable=True)
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     try:

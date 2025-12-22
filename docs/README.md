@@ -13,6 +13,13 @@ Este projeto implementa uma API robusta para um SaaS financeiro, utilizando Flas
 ## 📂 Estrutura do Projeto
 
 ```
+
+#### Múltiplos Webhook Secrets
+- Se você usa Stripe CLI e também um endpoint pelo Dashboard, informe ambos separados por vírgula em `STRIPE_WEBHOOK_SECRET`. A API tentará validar em ordem.
+- Exemplo:
+```
+STRIPE_WEBHOOK_SECRET=whsec_cli_xxx,whsec_dashboard_yyy
+```
 integracao_srtipe/
 ├── core/
 │   ├── auth.py          # Lógica de autenticação JWT
@@ -57,6 +64,11 @@ STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 PLATFORM_PRICE_ID=price_...
 DOMAIN=http://localhost:4242
+DOCS_PUBLIC=1
+# Liberação Pós-Pagamento (Lojas)
+PAYMENTS_EVENTS_SECRET=changeme-hmac-secret
+PAYMENTS_EVENTS_PATH=/payments/events/
+PAYMENTS_EVENTS_HEADER=X_PAYMENTS_SIGNATURE
 
 # Segurança
 JWT_SECRET=sua_chave_secreta_jwt
@@ -82,11 +94,17 @@ MYSQL_USER=usuario
 MYSQL_PASSWORD=senha
 ```
 
+### 4. Auditoria de Configuração (Local)
+- Visão: `http://localhost:4242/config` exibe configuração principal e uma auditoria visual por grupos.
+- Endpoint: `http://localhost:4242/config/audit` retorna JSON com `group`, `key`, `value/masked`, `required`, `ok`, `message`.
+- Observação: acesso restrito a `127.0.0.1`/`::1`. Segredos são mascarados.
+- Nota: as variáveis são carregadas automaticamente via `python-dotenv` em `core/config.py`.
+
 ## ▶️ Execução
  
- ### Rodar o Servidor (Desenvolvimento)
- ```bash
- python server.py
+### Rodar o Servidor (Desenvolvimento)
+```bash
+python server.py
  ```
  O servidor iniciará em `http://localhost:4242`.
  
@@ -119,8 +137,22 @@ MYSQL_PASSWORD=senha
 pytest
 ```
 
+## 🔗 Liberação Pós-Pagamento (HMAC)
+- Ao concluir `checkout.session.completed`, notificamos a loja via `POST <storeDomain>/payments/events/` com corpo JSON e assinatura HMAC-SHA256 no cabeçalho `X_PAYMENTS_SIGNATURE`.
+- Para habilitar:
+  1) Defina `storeDomain` ao criar a conta conectada (`POST /api/v1/create-connect-account`).
+  2) Configure `PAYMENTS_EVENTS_SECRET` na API e o mesmo segredo na loja.
+  3) A loja deve validar a assinatura e atualizar o pedido (`status='pago'`) quando `order_id` estiver presente.
+- Idempotência: eventos repetidos (mesmo `event_id`) não são reenviados.
+
 ## 📚 Documentação da API
 Consulte [docs/API.md](API.md) para detalhes completos sobre os endpoints, formatos de request/response e códigos de erro.
+Veja também o guia de integração de lojas em [docs/INTEGRACAO_LOJAS.md](INTEGRACAO_LOJAS.md) para configurar redirecionamento pós-pagamento e validação HMAC.
+
+## 🧰 Ferramentas Locais (Somente localhost)
+- Config: `/config`, `/config/audit`
+- Admin: `/stores`, `/stores/list`, `/stores/get/<account_id>`, `/users`
+- Propósito: inspeção e configuração local, sem exposição de segredos (sempre mascarados).
 
 ## � Modelo de Negócio (SaaS + Marketplace)
 

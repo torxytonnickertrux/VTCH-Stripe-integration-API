@@ -14,6 +14,9 @@ env/
 .vscode/
 *.swp
 
+# Node
+node_modules/
+
 # Database
 *.db
 *.sqlite3
@@ -31,3 +34,6 @@ logs/
 
 # Mac
 .DS_Store
+
+# Binary resources
+resouce/*.zip

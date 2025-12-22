@@ -5,13 +5,14 @@ import json
 import time
 from flask import Flask, jsonify, request, redirect, make_response, g, render_template
 from functools import wraps
-from dotenv import load_dotenv
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from core.config import Config
 from core.logging import configure_logging, bind_request_context
 from core.rate_limit import init_limiter
 from core.auth import auth_required, generate_access_token, generate_refresh_token
+from core.config_audit import audit_config
+from core.http import ok, error
 from core.schemas import (
     parse_and_validate,
     CreateProductSchema,
@@ -19,7 +20,7 @@ from core.schemas import (
     SubscribePlatformSchema,
     CreatePortalSessionSchema,
 )
-from core.db import init_db, SessionLocal, User, StripeAccount, WebhookEvent, WebhookLog
+from core.db import init_db, SessionLocal, User, StripeAccount, WebhookEvent, WebhookLog, StoreDispatch
 from core.stripe_service import (
     create_product_on_account,
     create_price_for_product,
@@ -33,7 +34,9 @@ import stripe
 import structlog
 from stripe import StripeClient
 import jwt
-load_dotenv()
+import hmac
+import hashlib
+import requests
 stripe.api_key = Config.STRIPE_SECRET_KEY
 stripe_client = StripeClient(str(Config.STRIPE_SECRET_KEY))
 app = Flask(__name__)
@@ -43,8 +46,410 @@ bind_request_context(app)
 limiter = init_limiter(app)
 init_db()
 app.start_time = time.time()
+def _mask_headers(headers):
+    masked = {}
+    for k, v in headers.items():
+        kl = (k or "").lower()
+        if kl in ("authorization", "stripe-signature"):
+            masked[k] = "***"
+        else:
+            masked[k] = v
+    return masked
+def _collect_post_payload():
+    payload = {}
+    j = request.get_json(silent=True)
+    if j and isinstance(j, dict):
+        payload["json"] = j
+    if request.form:
+        payload["form"] = request.form.to_dict()
+    raw = request.get_data(cache=True, as_text=True)
+    if raw:
+        payload["raw"] = raw[:2000]
+    return payload
+@app.before_request
+def _log_incoming_post():
+    if request.method == "POST":
+        logger = structlog.get_logger()
+        logger.info(
+            "incoming_post",
+            path=request.path,
+            method=request.method,
+            remote_addr=request.remote_addr,
+            headers=_mask_headers(request.headers),
+            body=_collect_post_payload(),
+        )
+def local_only(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        ip = request.remote_addr or ''
+        if ip not in ('127.0.0.1', '::1'):
+            return jsonify({'error': 'forbidden'}), 403
+        return fn(*args, **kwargs)
+    return wrapper
+@app.route('/config', methods=['GET'])
+@local_only
+def config_view():
+    cfg = {
+        'DOMAIN': Config.DOMAIN,
+        'API_VERSION': Config.API_VERSION,
+        'DOCS_PUBLIC': Config.DOCS_PUBLIC,
+        'RATE_LIMIT_DEFAULT': Config.RATE_LIMIT_DEFAULT,
+        'RATE_LIMIT_LOGIN': Config.RATE_LIMIT_LOGIN,
+        'RATE_LIMIT_CHECKOUT': Config.RATE_LIMIT_CHECKOUT,
+        'RATE_LIMIT_WEBHOOK': Config.RATE_LIMIT_WEBHOOK,
+        'PLATFORM_PRICE_ID': True if Config.PLATFORM_PRICE_ID else False,
+        'STRIPE_WEBHOOK_SECRET': True if Config.STRIPE_WEBHOOK_SECRET else False,
+        'PAYMENTS_EVENTS_SECRET': True if Config.PAYMENTS_EVENTS_SECRET else False,
+        'PAYMENTS_EVENTS_PATH': Config.PAYMENTS_EVENTS_PATH,
+        'PAYMENTS_EVENTS_HEADER': Config.PAYMENTS_EVENTS_HEADER,
+    }
+    audit = audit_config()
+    return render_template('config.html', cfg=cfg, audit=audit)
+@app.route('/config/audit', methods=['GET'])
+@local_only
+def config_audit_json():
+    return jsonify(audit_config())
+@app.route('/config/store', methods=['POST'])
+@local_only
+def config_store():
+    data = parse_request_body()
+    account_id = data.get('accountId')
+    store_domain = data.get('storeDomain')
+    if not account_id or not store_domain:
+        return error('invalid_payload', 400)
+    db = SessionLocal()
+    try:
+        acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+        if not acc:
+            return error('account_not_found', 404)
+        acc.store_domain = store_domain
+        db.add(acc)
+        db.commit()
+        return ok({'status': 'updated', 'accountId': account_id, 'storeDomain': store_domain})
+    finally:
+        db.close()
+@app.route('/stores', methods=['GET'])
+@local_only
+def stores_view():
+    return render_template('stores.html')
+@app.route('/stores/list', methods=['GET'])
+@local_only
+def stores_list():
+    db = SessionLocal()
+    try:
+        rows = db.query(StripeAccount, User).join(User, StripeAccount.user_id == User.id).all()
+        data = []
+        for acc, user in rows:
+            data.append({
+                'accountId': acc.account_id,
+                'userId': user.id,
+                'email': user.email,
+                'storeDomain': acc.store_domain
+            })
+        return ok({'stores': data})
+    finally:
+        db.close()
+@app.route('/stores/<account_id>', methods=['GET'])
+@local_only
+def store_detail_view(account_id):
+    return render_template('store_detail.html', account_id=account_id)
+@app.route('/stores/get/<account_id>', methods=['GET'])
+@local_only
+def stores_get(account_id):
+    db = SessionLocal()
+    try:
+        acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+        if not acc:
+            return error('account_not_found', 404)
+        user = db.query(User).filter_by(id=acc.user_id).first()
+        return ok({
+            'accountId': acc.account_id,
+            'userId': acc.user_id,
+            'email': user.email if user else None,
+            'storeDomain': acc.store_domain
+        })
+    finally:
+        db.close()
+@app.route('/stores/dispatches/<account_id>', methods=['GET'])
+@local_only
+def stores_dispatches(account_id):
+    db = SessionLocal()
+    try:
+        rows = db.query(StoreDispatch).filter_by(account_id=account_id).order_by(StoreDispatch.id.desc()).limit(200).all()
+        data = []
+        for d in rows:
+            data.append({
+                'eventId': d.event_id,
+                'orderId': d.order_id,
+                'status': d.status,
+                'attempts': d.attempts,
+                'deliveredAt': d.delivered_at.isoformat() if d.delivered_at else None
+            })
+        return ok({'dispatches': data})
+    finally:
+        db.close()
+@app.route('/stores/webhooks/<account_id>', methods=['GET'])
+@local_only
+def stores_webhooks(account_id):
+    db = SessionLocal()
+    try:
+        rows = db.query(WebhookLog).order_by(WebhookLog.id.desc()).limit(400).all()
+        data = []
+        for w in rows:
+            try:
+                ev = json.loads(w.payload)
+                if ev.get('account') == account_id:
+                    data.append({
+                        'eventId': ev.get('id'),
+                        'type': ev.get('type'),
+                        'receivedAt': w.received_at.isoformat() if w.received_at else None
+                    })
+            except Exception:
+                pass
+        return ok({'webhooks': data})
+    finally:
+        db.close()
+@app.route('/admin/stores/update', methods=['POST'])
+@local_only
+def admin_stores_update_post():
+    data = parse_request_body()
+    account_id = data.get('accountId')
+    store_domain = data.get('storeDomain')
+    if not account_id or not store_domain:
+        return error('invalid_payload', 400)
+    db = SessionLocal()
+    try:
+        acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+        if not acc:
+            return error('account_not_found', 404)
+        acc.store_domain = store_domain
+        db.add(acc)
+        db.commit()
+        return ok({'status': 'updated', 'accountId': account_id, 'storeDomain': store_domain})
+    finally:
+        db.close()
+@app.route('/admin/stores/upsert', methods=['POST'])
+@local_only
+def admin_stores_upsert():
+    data = parse_request_body()
+    user_id = data.get('userId')
+    account_id = data.get('accountId')
+    store_domain = data.get('storeDomain')
+    if not user_id or not account_id:
+        return error('invalid_payload', 400)
+    db = SessionLocal()
+    try:
+        acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+        if acc:
+            acc.store_domain = store_domain
+            db.add(acc)
+            db.commit()
+            return ok({'status': 'updated', 'accountId': account_id, 'storeDomain': store_domain})
+        u = db.query(User).filter_by(id=user_id).first()
+        if not u:
+            return error('user_not_found', 404)
+        acc = StripeAccount(user_id=user_id, account_id=account_id, store_domain=store_domain)
+        db.add(acc)
+        db.commit()
+        return ok({'status': 'created', 'accountId': account_id, 'storeDomain': store_domain})
+    finally:
+        db.close()
+@app.route('/admin/stores/create', methods=['POST'])
+@local_only
+def admin_stores_create():
+    data = parse_request_body()
+    user_id = data.get('userId')
+    email = data.get('email')
+    store_domain = data.get('storeDomain')
+    if not user_id or not email:
+        return error('invalid_payload', 400)
+    payload = {
+        "display_name": email,
+        "contact_email": email,
+        "dashboard": "full",
+        "defaults": {
+            "responsibilities": {
+                "fees_collector": "stripe",
+                "losses_collector": "stripe",
+            }
+        },
+        "identity": {
+            "country": "BR",
+            "entity_type": "company",
+        },
+        "configuration": {
+            "customer": {},
+            "merchant": {
+                "capabilities": {
+                    "card_payments": {"requested": True},
+                }
+            },
+        },
+    }
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter_by(id=int(user_id)).first()
+        if not u:
+            return error('user_not_found', 404)
+        acct = stripe_client.v2.core.accounts.create(payload)
+        db.add(StripeAccount(user_id=u.id, account_id=acct.id, store_domain=store_domain))
+        db.commit()
+        return ok({'status': 'created', 'accountId': acct.id, 'storeDomain': store_domain, 'userId': u.id})
+    finally:
+        db.close()
+@app.route('/admin/stores/update/<account_id>', methods=['PUT'])
+@local_only
+def admin_stores_update(account_id):
+    data = parse_request_body()
+    store_domain = data.get('storeDomain')
+    if not store_domain:
+        return error('invalid_payload', 400)
+    db = SessionLocal()
+    try:
+        acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+        if not acc:
+            return error('account_not_found', 404)
+        acc.store_domain = store_domain
+        db.add(acc)
+        db.commit()
+        return ok({'status': 'updated', 'accountId': account_id, 'storeDomain': store_domain})
+    finally:
+        db.close()
+@app.route('/admin/stores/delete/<account_id>', methods=['DELETE'])
+@local_only
+def admin_stores_delete(account_id):
+    db = SessionLocal()
+    try:
+        acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+        if not acc:
+            return error('account_not_found', 404)
+        db.delete(acc)
+        db.commit()
+        return ok({'status': 'deleted', 'accountId': account_id})
+    finally:
+        db.close()
+@app.route('/api/v1/me', methods=['GET'])
+def me():
+    def _inner():
+        db = SessionLocal()
+        try:
+            uid = g.user_id
+            user = db.query(User).filter_by(id=uid).first()
+            accounts = db.query(StripeAccount).filter_by(user_id=uid).all()
+            return jsonify({
+                'id': user.id,
+                'email': user.email,
+                'accounts': [{'accountId': a.account_id, 'storeDomain': a.store_domain} for a in accounts]
+            })
+        finally:
+            db.close()
+    return auth_required(_inner)()
+@app.route('/users', methods=['GET'])
+@local_only
+def users_view():
+    return render_template('users.html')
+@app.route('/local/auth', methods=['GET'])
+@local_only
+def local_auth_view():
+    return render_template('local_auth.html')
+@app.route('/users/<int:user_id>', methods=['GET'])
+@local_only
+def user_detail_view(user_id):
+    return render_template('user_detail.html', user_id=user_id)
+@app.route('/admin/users/list', methods=['GET'])
+@local_only
+def admin_users_list():
+    db = SessionLocal()
+    try:
+        rows = db.query(User).order_by(User.id.asc()).all()
+        return ok({'users': [{'id': u.id, 'email': u.email} for u in rows]})
+    finally:
+        db.close()
+@app.route('/admin/users/create', methods=['POST'])
+@local_only
+def admin_users_create():
+    data = parse_request_body()
+    email = data.get('email')
+    password = data.get('password')
+    if not email or not password:
+        return error('invalid_payload', 400)
+    db = SessionLocal()
+    try:
+        exists = db.query(User).filter_by(email=email).first()
+        if exists:
+            return error('email_exists', 409)
+        user = User(email=email, password_hash=generate_password_hash(password))
+        db.add(user)
+        db.commit()
+        return ok({'status': 'created', 'id': user.id, 'email': user.email})
+    finally:
+        db.close()
+@app.route('/admin/users/delete/<int:user_id>', methods=['DELETE'])
+@local_only
+def admin_users_delete(user_id):
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter_by(id=user_id).first()
+        if not u:
+            return error('not_found', 404)
+        db.delete(u)
+        db.commit()
+        return ok({'status': 'deleted', 'id': user_id})
+    finally:
+        db.close()
+@app.route('/admin/users/<int:user_id>/stores', methods=['GET'])
+@local_only
+def admin_user_stores(user_id):
+    db = SessionLocal()
+    try:
+        rows = db.query(StripeAccount).filter_by(user_id=user_id).all()
+        return ok({'stores': [{'accountId': a.account_id, 'storeDomain': a.store_domain} for a in rows]})
+    finally:
+        db.close()
+@app.route('/admin/users/<int:user_id>/stores/create', methods=['POST'])
+@local_only
+def admin_user_store_create(user_id):
+    data = parse_request_body()
+    email = data.get('email')
+    store_domain = data.get('storeDomain')
+    if not email:
+        return error('invalid_payload', 400)
+    payload = {
+        "display_name": email,
+        "contact_email": email,
+        "dashboard": "full",
+        "defaults": {
+            "responsibilities": {
+                "fees_collector": "stripe",
+                "losses_collector": "stripe",
+            }
+        },
+        "identity": {
+            "country": "BR",
+            "entity_type": "company",
+        },
+        "configuration": {
+            "customer": {},
+            "merchant": {
+                "capabilities": {
+                    "card_payments": {"requested": True},
+                }
+            },
+        },
+    }
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter_by(id=user_id).first()
+        if not u:
+            return jsonify({'error': 'user_not_found'}), 404
+        acct = stripe_client.v2.core.accounts.create(payload)
+        db.add(StripeAccount(user_id=user_id, account_id=acct.id, store_domain=store_domain))
+        db.commit()
+        return jsonify({'status': 'created', 'accountId': acct.id, 'storeDomain': store_domain})
+    finally:
+        db.close()
 
-@app.route('/', methods=['GET'])
+@app.route('/', methods=['GET', 'POST'])
 def home():
     domain = Config.DOMAIN
     env = 'SANDBOX' if ('localhost' in domain or 'ngrok' in domain) else 'PRODUCTION'
@@ -108,18 +513,16 @@ def parse_request_body():
     return data
 
 def enforce_account_ownership(account_id):
-    if g.get('stripe_account_id') and account_id != g.get('stripe_account_id'):
+    uid = g.get('user_id')
+    if not uid or not account_id:
         return False
-    return True
+    db = SessionLocal()
+    try:
+        exists = db.query(StripeAccount).filter_by(user_id=uid, account_id=account_id).first()
+        return True if exists else False
+    finally:
+        db.close()
 
-def local_only(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        ip = request.remote_addr or ''
-        if ip not in ('127.0.0.1', '::1'):
-            return jsonify({'error': 'forbidden'}), 403
-        return fn(*args, **kwargs)
-    return wrapper
 @app.route('/api/create-product', methods=['POST'])
 @app.route('/api/v1/create-product', methods=['POST'])
 @auth_required
@@ -419,15 +822,22 @@ def create_portal_session():
 @app.route('/webhook', methods=['POST'])
 @limiter.limit(Config.RATE_LIMIT_WEBHOOK)
 def webhook_received():
-    endpoint_secret = Config.STRIPE_WEBHOOK_SECRET
-    if not endpoint_secret:
+    secrets_raw = Config.STRIPE_WEBHOOK_SECRET
+    if not secrets_raw:
         return jsonify({'error': 'webhook_secret_not_configured'}), 500
     sig_header = request.headers.get('stripe-signature')
-    try:
-        event = verify_webhook(request.data, sig_header, endpoint_secret)
-    except stripe.error.SignatureVerificationError as e:
+    body = request.get_data(cache=True)
+    event = None
+    for sec in [s.strip() for s in str(secrets_raw).split(',') if s.strip()]:
+        try:
+            event = verify_webhook(body, sig_header, sec)
+            break
+        except stripe.error.SignatureVerificationError as e:
+            event = None
+            continue
+    if event is None:
         logger = structlog.get_logger()
-        logger.warning("webhook_invalid_signature", request_id=g.get('request_id'), error=str(e))
+        logger.warning("webhook_invalid_signature", request_id=g.get('request_id'), error="signature_mismatch_all_secrets")
         return jsonify({'error': 'invalid_signature'}), 400
 
     logger = structlog.get_logger()
@@ -466,6 +876,41 @@ def webhook_received():
                 db2.commit()
             finally:
                 db2.close()
+            try:
+                acc_id = event.get('account')
+                order_id = None
+                if isinstance(session, dict):
+                    meta = session.get('metadata') or {}
+                    order_id = meta.get('orderId') or session.get('client_reference_id')
+                db3 = SessionLocal()
+                try:
+                    acc = db3.query(StripeAccount).filter_by(account_id=acc_id).first()
+                    if acc and acc.store_domain and Config.PAYMENTS_EVENTS_SECRET:
+                        payload = {
+                            "id": event.get("id"),
+                            "type": event.get("type"),
+                            "order_id": order_id,
+                            "status": "pago"
+                        }
+                        body = json.dumps(payload, separators=(",", ":"))
+                        sig = hmac.new(
+                            Config.PAYMENTS_EVENTS_SECRET.encode("utf-8"),
+                            body.encode("utf-8"),
+                            hashlib.sha256
+                        ).hexdigest()
+                        ep = acc.store_domain.rstrip("/") + Config.PAYMENTS_EVENTS_PATH
+                        headers = {Config.PAYMENTS_EVENTS_HEADER: sig, "Content-Type": "application/json"}
+                        dispatch = StoreDispatch(event_id=event.get("id"), account_id=acc_id, order_id=order_id, status="pago", attempts=1)
+                        db3.add(dispatch)
+                        db3.commit()
+                        try:
+                            requests.post(ep, data=body, headers=headers, timeout=5)
+                        except Exception:
+                            pass
+                finally:
+                    db3.close()
+            except Exception:
+                pass
         case 'checkout.session.async_payment_failed':
             session = event['data']['object']
             status = session['status']
