@@ -286,7 +286,7 @@ Authorization: Bearer &lt;refresh&gt;
 
   <section id="store-release" class="mb-5">
     <h2 class="h4">Liberação para Lojas (HMAC)</h2>
-    <p>Após <code>checkout.session.completed</code>, notificamos a loja via HMAC-SHA256 para liberar o pedido.</p>
+    <p>Após <code>checkout.session.completed</code> ou <code>payment_intent.succeeded</code>, notificamos a loja via HMAC-SHA256 para liberar o pedido.</p>
     <div class="row row-cols-1 row-cols-lg-2 g-4">
       <div class="col">
         <div class="card h-100">
@@ -294,16 +294,11 @@ Authorization: Bearer &lt;refresh&gt;
             <h5 class="card-title">Configuração</h5>
             <ul>
               <li>Defina <code>storeDomain</code> ao criar a conta (ex.: <code>https://loja.com</code>).</li>
-              <li>No .env da API: <code>PAYMENTS_EVENTS_SECRET</code>, <code>PAYMENTS_EVENTS_PATH</code> (<code>/payments/events/</code>), <code>PAYMENTS_EVENTS_HEADER</code> (<code>X_PAYMENTS_SIGNATURE</code>).</li>
-              <li>A loja deve validar HMAC do corpo JSON e atualizar status para <em>pago</em> quando houver <code>order_id</code>.</li>
+              <li>No .env da API: <code>PAYMENTS_EVENTS_SECRET</code>, <code>PAYMENTS_EVENTS_PATH</code> (<code>/payments/events/</code>), <code>PAYMENTS_EVENTS_HEADER</code> (<code>X-Payments-Signature</code>).</li>
+              <li>A loja deve validar HMAC do corpo JSON e atualizar status para <em>paid</em> quando houver <code>orderId</code>.</li>
             </ul>
             <pre class="mt-3"><code># Corpo enviado para a loja
-{
-  "id":"evt_...",
-  "type":"checkout.session.completed",
-  "order_id":"ord_123",
-  "status":"pago"
-}</code></pre>
+{"orderId":"ord_123","status":"paid"}</code></pre>
           </div>
         </div>
       </div>
@@ -317,14 +312,13 @@ SECRET = "&lt;PAYMENTS_EVENTS_SECRET&gt;"
 @app.route('/payments/events/', methods=['POST'])
 def events():
     body = request.data
-    sig = request.headers.get('X_PAYMENTS_SIGNATURE') or ''
+    sig = request.headers.get('X-Payments-Signature') or ''
     calc = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(calc, sig):
         return jsonify({'error':'invalid_signature'}), 400
     data = json.loads(body.decode('utf-8'))
-    if data.get('order_id') and data.get('status') == 'pago':
-        # atualizar pedido para pago
-        ...
+    if data.get('orderId') and data.get('status') == 'paid':
+        pass
     return jsonify({'status':'ok'})</code></pre>
           </div>
         </div>
@@ -411,7 +405,7 @@ def checkout_cancel(request):
       <li><code>DOCS_PUBLIC</code>: <code>1</code> para docs públicas; <code>0</code> exige autenticação.</li>
       <li><code>PAYMENTS_EVENTS_SECRET</code>: segredo HMAC para notificar lojas.</li>
       <li><code>PAYMENTS_EVENTS_PATH</code>: caminho do endpoint na loja (padrão <code>/payments/events/</code>).</li>
-      <li><code>PAYMENTS_EVENTS_HEADER</code>: cabeçalho com assinatura HMAC (padrão <code>X_PAYMENTS_SIGNATURE</code>).</li>
+      <li><code>PAYMENTS_EVENTS_HEADER</code>: cabeçalho com assinatura HMAC (padrão <code>X-Payments-Signature</code>).</li>
     </ul>
   </section>
   <section id="ferramentas-locais" class="mb-5">
@@ -442,7 +436,7 @@ try:
 except stripe.error.SignatureVerificationError:
   return {"error":"invalid_signature"}, 400</code></pre>
             <h6 class="mt-3">Configuração de Endpoint (Plataforma)</h6>
-            <p>Defina um único endpoint em <code>/webhook</code> no Stripe Dashboard e ative "Listen to events from connected accounts". Roteie usando <code>event.account</code>.</p>
+            <p>Defina um único endpoint em <code>/webhook</code> no Stripe Dashboard e ative eventos das contas conectadas. Roteie usando <code>event.account</code>; quando ausente, correlacione via <code>orderId</code>.</p>
             <h6>Configuração de Endpoint (Por Loja)</h6>
             <p>Cada loja pode criar seu próprio endpoint com URL única (ex.: <code>/webhook/acct_123</code>). É necessário manter o <em>signing secret</em> por loja.</p>
           </div>
@@ -498,8 +492,9 @@ if (event.account) {
   body: JSON.stringify({
     accountId: 'acct_123',
     priceId: 'price_abc',
-    metadata: { orderId: 'ord_789', productId: 'sku_456', userId: '42' },
-    clientReferenceId: 'ord_789'
+    orderId: 'ord_789',
+    successUrl: 'https://loja.com/checkout/success?session_id={{CHECKOUT_SESSION_ID}}',
+    cancelUrl: 'https://loja.com/checkout/cancel'
   })
 });</code></pre>
           </div>
@@ -528,8 +523,31 @@ if event.type == 'checkout.session.completed':
         <li>Use <code>metadata</code> e <code>client_reference_id</code> para correlação confiável.</li>
         <li>Webhook é a fonte de verdade; não libere apenas com redirect.</li>
         <li>No Connect, diferencie lojas usando <code>event.account</code>.</li>
+        <li>Fallback: se <code>event.account</code> vier vazio, correlacione por <code>orderId</code>.</li>
       </ul>
     </div>
+  </section>
+
+  <section id="checklist-loja" class="mb-5">
+    <h2 class="h4">Checklist de Integração da Loja</h2>
+    <ul>
+      <li>Defina <code>storeDomain</code> na conta Stripe conectada.</li>
+      <li>Implemente <code>POST /payments/events/</code> aceitando <code>{"orderId","status"}</code>.</li>
+      <li>Valide HMAC-SHA256 com cabeçalho <code>X-Payments-Signature</code> e segredo compartilhado.</li>
+      <li>Atualize o pedido para <em>paid</em> quando o corpo contiver <code>status = "paid"</code>.</li>
+      <li>Mantenha idempotência: ignore reprocessamentos do mesmo pedido.</li>
+      <li>Configure <code>successUrl</code> e <code>cancelUrl</code> nas criações de checkout.</li>
+    </ul>
+  </section>
+
+  <section id="troubleshooting" class="mb-5">
+    <h2 class="h4">Troubleshooting</h2>
+    <ul>
+      <li>Se só ver <code>GET /orders/status/&lt;id&gt;</code> na loja, o <code>POST /payments/events/</code> não chegou.</li>
+      <li>Verifique <code>storeDomain</code>, <code>PAYMENTS_EVENTS_SECRET</code>, <code>PAYMENTS_EVENTS_HEADER</code> e caminho <code>/payments/events/</code>.</li>
+      <li>Confirme que <code>orderId</code> está presente no Checkout (<code>metadata</code> ou <code>client_reference_id</code>).</li>
+      <li>Habilite eventos de contas conectadas no endpoint do Stripe para o webhook da plataforma.</li>
+    </ul>
   </section>
 
   <section id="webhook-api" class="mb-5">

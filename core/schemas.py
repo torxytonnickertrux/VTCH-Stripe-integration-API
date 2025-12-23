@@ -16,6 +16,7 @@ class CreateCheckoutSessionSchema(BaseModel):
     priceId: str = Field(min_length=1)
     successUrl: Optional[str] = None
     cancelUrl: Optional[str] = None
+    orderId: Optional[str] = None
 
 class SubscribePlatformSchema(BaseModel):
     accountId: str = Field(min_length=1)

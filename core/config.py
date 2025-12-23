@@ -11,7 +11,7 @@ class Config:
     DOCS_PUBLIC = ((os.getenv("DOCS_PUBLIC") or "1").lower() not in ("0", "false", "no"))
     PAYMENTS_EVENTS_SECRET = os.getenv("PAYMENTS_EVENTS_SECRET") or ""
     PAYMENTS_EVENTS_PATH = os.getenv("PAYMENTS_EVENTS_PATH") or "/payments/events/"
-    PAYMENTS_EVENTS_HEADER = os.getenv("PAYMENTS_EVENTS_HEADER") or "X_PAYMENTS_SIGNATURE"
+    PAYMENTS_EVENTS_HEADER = os.getenv("PAYMENTS_EVENTS_HEADER") or "X-Payments-Signature"
     PLATFORM_PRICE_ID = os.getenv("PLATFORM_PRICE_ID") or ""
     JWT_SECRET = os.getenv("JWT_SECRET") or "change-me"
     JWT_ALG = "HS256"

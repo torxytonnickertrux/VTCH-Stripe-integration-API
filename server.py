@@ -50,7 +50,7 @@ def _mask_headers(headers):
     masked = {}
     for k, v in headers.items():
         kl = (k or "").lower()
-        if kl in ("authorization", "stripe-signature"):
+        if kl in ("authorization", "stripe-signature", "x-payments-signature", "x_payments_signature"):
             masked[k] = "***"
         else:
             masked[k] = v
@@ -767,6 +767,7 @@ def create_checkout_session():
             return jsonify(err), 400
         account_id = payload.accountId
         price_id = payload.priceId
+        order_id = getattr(payload, "orderId", None)
         db = SessionLocal()
         try:
             acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
@@ -784,6 +785,18 @@ def create_checkout_session():
         price = retrieve_price(price_id, account_id)
         price_type = price.type
         mode = 'subscription' if price_type == 'recurring' else 'payment'
+        from flask import g as _g
+        setattr(_g, "order_id", order_id)
+        if order_id:
+            dbc = SessionLocal()
+            try:
+                from core.db import OrderCorrelation
+                exists = dbc.query(OrderCorrelation).filter_by(order_id=order_id).first()
+                if not exists:
+                    dbc.add(OrderCorrelation(order_id=order_id, account_id=account_id))
+                    dbc.commit()
+            finally:
+                dbc.close()
         checkout_session = create_checkout_session_connected(
             account_id,
             price_id,
@@ -853,70 +866,96 @@ def webhook_received():
     finally:
         db.close()
 
-    match event['type']:
-        case 'customer.subscription.trial_will_end':
-            subscription = event['data']['object']
-            status = subscription['status']
-            logger.info("webhook_subscription_trial_will_end", request_id=g.get('request_id'), event_id=event['id'], status=status)
-        case 'customer.subscription.deleted':
-            subscription = event['data']['object']
-            status = subscription['status']
-            logger.info("webhook_subscription_deleted", request_id=g.get('request_id'), event_id=event['id'], status=status)
-        case 'checkout.session.completed':
-            session = event['data']['object']
-            status = session['status']
-            logger.info("webhook_checkout_completed", request_id=g.get('request_id'), event_id=event['id'], status=status)
-            db2 = SessionLocal()
+    etype = event.get('type')
+    if etype in ('checkout.session.completed', 'payment_intent.succeeded'):
+        obj = event['data']['object']
+        raw_status = obj.get('payment_status') or obj.get('status')
+        if raw_status in ('paid', 'succeeded', 'completed', 'complete'):
+            normalized_status = 'paid'
+        else:
+            logger.info("webhook_ignored_nonfinal", request_id=g.get('request_id'), event_id=event['id'], event_type=etype, status=raw_status)
+            return jsonify({'status': 'ignored'}), 200
+        db2 = SessionLocal()
+        try:
+            exists = db2.query(WebhookEvent).filter_by(event_id=event['id']).first()
+            if exists:
+                logger.info("webhook_duplicate", request_id=g.get('request_id'), event_id=event['id'])
+                return jsonify({'status': 'duplicate'}), 200
+            db2.add(WebhookEvent(event_id=event['id']))
+            db2.commit()
+        finally:
+            db2.close()
+        acc_id = event.get('account')
+        order_id = None
+        if isinstance(obj, dict):
+            meta = obj.get('metadata') or {}
+            order_id = meta.get('orderId') or obj.get('client_reference_id')
+        if not order_id:
+            logger.info("webhook_missing_order_id", request_id=g.get('request_id'), event_id=event['id'], event_type=etype)
+            return jsonify({'status': 'no_order_id'}), 200
+        if not acc_id:
+            # try resolve account via order correlation
+            dbcorr = SessionLocal()
             try:
-                exists = db2.query(WebhookEvent).filter_by(event_id=event['id']).first()
-                if exists:
-                    logger.info("webhook_duplicate", request_id=g.get('request_id'), event_id=event['id'])
-                    return jsonify({'status': 'duplicate'}), 200
-                db2.add(WebhookEvent(event_id=event['id']))
-                db2.commit()
+                from core.db import OrderCorrelation
+                corr = dbcorr.query(OrderCorrelation).filter_by(order_id=order_id).first()
+                if corr:
+                    acc_id = corr.account_id
+                    logger.info("webhook_account_resolved_from_correlation", request_id=g.get('request_id'), event_id=event['id'], order_id=order_id, account_id=acc_id)
+                else:
+                    logger.info("webhook_account_unresolved", request_id=g.get('request_id'), event_id=event['id'], order_id=order_id)
+                    return jsonify({'status': 'success'}), 200
             finally:
-                db2.close()
-            try:
-                acc_id = event.get('account')
-                order_id = None
-                if isinstance(session, dict):
-                    meta = session.get('metadata') or {}
-                    order_id = meta.get('orderId') or session.get('client_reference_id')
-                db3 = SessionLocal()
-                try:
-                    acc = db3.query(StripeAccount).filter_by(account_id=acc_id).first()
-                    if acc and acc.store_domain and Config.PAYMENTS_EVENTS_SECRET:
-                        payload = {
-                            "id": event.get("id"),
-                            "type": event.get("type"),
-                            "order_id": order_id,
-                            "status": "pago"
-                        }
-                        body = json.dumps(payload, separators=(",", ":"))
-                        sig = hmac.new(
-                            Config.PAYMENTS_EVENTS_SECRET.encode("utf-8"),
-                            body.encode("utf-8"),
-                            hashlib.sha256
-                        ).hexdigest()
-                        ep = acc.store_domain.rstrip("/") + Config.PAYMENTS_EVENTS_PATH
-                        headers = {Config.PAYMENTS_EVENTS_HEADER: sig, "Content-Type": "application/json"}
-                        dispatch = StoreDispatch(event_id=event.get("id"), account_id=acc_id, order_id=order_id, status="pago", attempts=1)
+                dbcorr.close()
+        db3 = SessionLocal()
+        try:
+            acc = db3.query(StripeAccount).filter_by(account_id=acc_id).first()
+            if acc and acc.store_domain and Config.PAYMENTS_EVENTS_SECRET:
+                payload = {
+                    "orderId": order_id,
+                    "status": normalized_status
+                }
+                body = json.dumps(payload, separators=(",", ":"))
+                sig = hmac.new(
+                    Config.PAYMENTS_EVENTS_SECRET.encode("utf-8"),
+                    body.encode("utf-8"),
+                    hashlib.sha256
+                ).hexdigest()
+                ep = acc.store_domain.rstrip("/") + Config.PAYMENTS_EVENTS_PATH
+                headers = {Config.PAYMENTS_EVENTS_HEADER: sig, "Content-Type": "application/json"}
+                dispatch = db3.query(StoreDispatch).filter_by(event_id=event.get("id")).first()
+                if not dispatch:
+                    dispatch = StoreDispatch(event_id=event.get("id"), account_id=acc_id, order_id=order_id, status=normalized_status, attempts=0)
+                    db3.add(dispatch)
+                    db3.commit()
+                logger = structlog.get_logger()
+                attempt = 0
+                delays = [1, 2, 4]
+                resp_ok = False
+                for dly in delays:
+                    attempt += 1
+                    try:
+                        r = requests.post(ep, data=body, headers=headers, timeout=5)
+                        logger.info("store_dispatch_response", request_id=g.get('request_id'), event_id=event['id'], status_code=getattr(r, 'status_code', None))
+                        dispatch.attempts = attempt
+                        if getattr(r, 'status_code', 0) == 200:
+                            resp_ok = True
+                            from datetime import datetime
+                            dispatch.delivered_at = datetime.utcnow()
+                            db3.add(dispatch)
+                            db3.commit()
+                            break
+                    except Exception as e:
+                        logger.info("store_dispatch_retry_scheduled", request_id=g.get('request_id'), event_id=event['id'], attempt=attempt, delay_seconds=dly)
+                        dispatch.attempts = attempt
                         db3.add(dispatch)
                         db3.commit()
-                        try:
-                            requests.post(ep, data=body, headers=headers, timeout=5)
-                        except Exception:
-                            pass
-                finally:
-                    db3.close()
-            except Exception:
-                pass
-        case 'checkout.session.async_payment_failed':
-            session = event['data']['object']
-            status = session['status']
-            logger.info("webhook_checkout_async_payment_failed", request_id=g.get('request_id'), event_id=event['id'], status=status)
-        case _:
-            logger.info("webhook_unhandled_type", request_id=g.get('request_id'), event_id=event['id'], event_type=event['type'])
+                    import time
+                    time.sleep(dly)
+        finally:
+            db3.close()
+    else:
+        logger.info("webhook_unhandled_type", request_id=g.get('request_id'), event_id=event['id'], event_type=event['type'])
 
     return jsonify({'status': 'success'})
 

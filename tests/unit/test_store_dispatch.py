@@ -29,7 +29,7 @@ def test_dispatch_event_to_store_with_hmac(monkeypatch):
     assert r.status_code == 200
     assert posted["url"] == "https://loja.com/payments/events/"
     body = json.loads(posted["data"])
-    assert body["order_id"] == "ord_1" and body["status"] == "pago"
+    assert body["orderId"] == "ord_1" and body["status"] == "paid"
     assert server.Config.PAYMENTS_EVENTS_HEADER in posted["headers"]
 
 @pytest.mark.unit

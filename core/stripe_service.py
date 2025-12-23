@@ -37,12 +37,20 @@ def create_checkout_session_platform(account_id, price_id, success_url, cancel_u
     )
     return session
 
+from flask import g, has_app_context
 def create_checkout_session_connected(account_id, price_id, mode, success_url, cancel_url, fee_amount):
+    order_id = None
+    try:
+        if has_app_context():
+            order_id = getattr(g, "order_id", None)
+    except Exception:
+        order_id = None
     checkout_session = stripe.checkout.Session.create(
         line_items=[{"price": price_id, "quantity": 1}],
         mode=mode,
         success_url=success_url,
         cancel_url=cancel_url,
+        **({"metadata": {"orderId": order_id}, "client_reference_id": order_id} if order_id else {}),
         **(
             {"subscription_data": {"application_fee_amount": fee_amount}}
             if mode == "subscription"
