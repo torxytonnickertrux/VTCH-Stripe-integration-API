@@ -1,12 +1,13 @@
 (() => {
   const canvas = document.getElementById('heroCanvas');
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas && canvas.getContext ? canvas.getContext('2d') : null;
   let w = 0, h = 0, t = 0;
   function resize() {
+    if (!canvas || !ctx) return;
     const parent = canvas.parentElement || document.body;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const cw = parent.clientWidth || window.innerWidth;
-    const ch = parent.clientHeight || window.innerHeight;
+    const dpr = Math.min(Number(window.devicePixelRatio) || 1, 2);
+    const cw = Math.max(1, parent.clientWidth || window.innerWidth || 1);
+    const ch = Math.max(240, parent.clientHeight || window.innerHeight || 240);
     canvas.style.width = cw + 'px';
     canvas.style.height = ch + 'px';
     canvas.width = Math.floor(cw * dpr);
@@ -20,6 +21,7 @@
   window.addEventListener('resize', resize);
   function rnd(a, b) { return a + Math.random() * (b - a) }
   function drawGrid() {
+    if (!ctx || w <= 0 || h <= 0) return;
     const spacing = 80;
     ctx.strokeStyle = 'rgba(31,41,55,0.35)';
     ctx.lineWidth = 1;
@@ -37,9 +39,10 @@
     }
   }
   function drawScanlines() {
+    if (!ctx || h <= 0 || w <= 0) return;
     const lines = 18;
     for (let i = 0; i < lines; i++) {
-      const y = (t * 0.6 + i * (h / lines)) % h;
+      const y = ((t * 0.6 + i * (h / lines)) % h) || 0;
       const g = ctx.createLinearGradient(0, y - 30, 0, y + 30);
       g.addColorStop(0, 'rgba(52, 211, 153, 0)');
       g.addColorStop(0.5, 'rgba(52, 211, 153, 0.12)');
@@ -49,11 +52,12 @@
     }
   }
   function drawNodes() {
+    if (!ctx || w <= 0 || h <= 0) return;
     const count = 60;
     ctx.fillStyle = 'rgba(52,211,153,0.5)';
     for (let i = 0; i < count; i++) {
-      const x = (i * 73 + t * 0.9) % w;
-      const y = (Math.sin((i * 0.003 + t * 0.0005)) * 0.5 + 0.5) * h;
+      const x = ((i * 73 + t * 0.9) % w) || 0;
+      const y = ((Math.sin((i * 0.003 + t * 0.0005)) * 0.5 + 0.5) * h) || 0;
       ctx.beginPath();
       ctx.arc(x, y, 1.2, 0, Math.PI * 2);
       ctx.fill();
@@ -61,6 +65,7 @@
   }
   let last = performance.now();
   function frame(now) {
+    if (!ctx) return;
     const dt = now - last;
     last = now;
     t += dt;
@@ -72,5 +77,5 @@
     drawNodes();
     requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
+  if (ctx) requestAnimationFrame(frame);
 })();

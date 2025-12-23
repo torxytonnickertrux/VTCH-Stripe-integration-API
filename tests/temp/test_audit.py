@@ -11,7 +11,7 @@ def test_webhook_audit_persists_payload(app_module, client):
         return {
             "id": "evt_test_123",
             "type": "checkout.session.completed",
-            "data": {"object": {"status": "complete"}},
+            "data": {"object": {"status": "complete", "metadata": {"orderId": "ORD_123"}}},
         }
     app_module.verify_webhook = ok_verify
     r = client.post("/webhook", data=b"{}")

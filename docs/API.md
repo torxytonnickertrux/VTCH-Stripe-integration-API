@@ -58,6 +58,8 @@ Esta documentação descreve todas as rotas públicas da API v1, modelos de aute
 - Método/URL: `POST /api/v1/create-connect-account`
 - Headers: `Authorization: Bearer <access_token>`
 - Body: `{"email": "<email@dominio>"}`
+- Parâmetros adicionais:
+  - `storeDomain` (opcional): domínio da loja para fallback de URLs e liberação via HMAC (ex.: `https://loja.com`)
 - Respostas:
   - Sucesso: `200` → `{"accountId":"acct_..."}`.
   - Erros: `401` (unauthorized), `500` (erro Stripe/outros).
@@ -165,12 +167,17 @@ Esta documentação descreve todas as rotas públicas da API v1, modelos de aute
 - Body:
   - `accountId` (string, obrigatório)
   - `priceId` (string, obrigatório)
+  - `successUrl` (string, opcional)
+  - `cancelUrl` (string, opcional)
 - Respostas:
-  - Sucesso: redireciona `303` para `session.url`.
+- Sucesso: redireciona `303` para `session.url`.
   - Erros: `400` (invalid_payload/ausência), `403` (ownership), `401`, `500`.
 - Observações:
-  - `mode` é `subscription` se `Price.type=recurring`; caso contrário `payment`.
-  - A plataforma pode aplicar taxa via `application_fee_amount`.
+- `mode` é `subscription` se `Price.type=recurring`; caso contrário `payment`.
+- A plataforma pode aplicar taxa via `application_fee_amount`.
+ - Se `successUrl`/`cancelUrl` não forem enviados e existir `storeDomain` cadastrado na conta, o fallback usa:
+   - `success`: `https://loja/checkout/success?session_id={CHECKOUT_SESSION_ID}`
+   - `cancel`: `https://loja/checkout/cancel`
 
 ### Assinar a plataforma (recorrente)
 - Propósito: criar sessão de assinatura usando `PLATFORM_PRICE_ID` na conta da plataforma, para o `accountId` informado como `customer_account`.
@@ -178,9 +185,12 @@ Esta documentação descreve todas as rotas públicas da API v1, modelos de aute
 - Headers: `Authorization: Bearer <access_token>`
 - Body:
   - `accountId` (string, obrigatório)
+  - `successUrl` (string, opcional)
+  - `cancelUrl` (string, opcional)
 - Respostas:
   - Sucesso: `200` → `{"url":"https://checkout.stripe.com/..."}`
-  - Erros: `400` (accountId ausente, priceId plataforma não configurado), `401`, `500`.
+- Erros: `400` (accountId ausente, priceId plataforma não configurado), `401`, `500`.
+ - Se `successUrl`/`cancelUrl` não forem enviados e existir `storeDomain` cadastrado para o `accountId`, o fallback usa os mesmos padrões de checkout acima.
 
 ## Portal do Cliente
 - Propósito: abrir o Billing Portal do Stripe para gerenciar assinaturas.
@@ -396,6 +406,94 @@ Esta documentação descreve todas as rotas públicas da API v1, modelos de aute
   }
   ```
 
+## Liberação Pós-Pagamento (Lojas)
+- Objetivo: ao concluir o pagamento, notificar automaticamente a loja cliente via webhook assinado com HMAC-SHA256 para liberar o pedido.
+- Requisitos:
+  - A conta conectada deve possuir `storeDomain` cadastrado (enviado ao criar a conta via `POST /api/v1/create-connect-account`).
+  - `PAYMENTS_EVENTS_SECRET` definido na API (segredo compartilhado com a loja).
+  - A loja deve expor um endpoint `POST <storeDomain>/payments/events/` aceitando `Content-Type: application/json` e o cabeçalho `X_PAYMENTS_SIGNATURE` com o hexdigest HMAC-SHA256 do corpo.
+- Fluxo:
+  - No `checkout.session.completed`, a API monta:
+    ```
+    {
+      "id": "<event_id>",
+      "type": "checkout.session.completed",
+      "order_id": "<metadata.orderId | client_reference_id>",
+      "status": "pago"
+    }
+    ```
+  - Assina com HMAC (`secret = PAYMENTS_EVENTS_SECRET`) e envia:
+    - URL: `<storeDomain>/payments/events/`
+    - Cabeçalho: `X_PAYMENTS_SIGNATURE: <hmac_sha256_hex_do_corpo>`
+  - Idempotência: se o `event_id` já foi processado (tabela `webhook_events`), não reenviamos.
+- Exemplo de verificador HMAC (Loja, Python):
+  ```
+  import hmac, hashlib, json
+  from flask import request, jsonify
+  SECRET = "<PAYMENTS_EVENTS_SECRET>"
+  @app.route('/payments/events/', methods=['POST'])
+  def events():
+      body = request.data
+      sig = request.headers.get('X_PAYMENTS_SIGNATURE') or ''
+      calc = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+      if not hmac.compare_digest(calc, sig):
+          return jsonify({'error':'invalid_signature'}), 400
+      data = json.loads(body.decode('utf-8'))
+      if data.get('order_id') and data.get('status') == 'pago':
+          # atualizar pedido para 'pago'
+          ...
+      return jsonify({'status':'ok'})
+  ```
+
+### Redirecionamento Pós-Pagamento (Guia para Lojas)
+- Rotas na loja:
+  - `GET /checkout/success?session_id=<id>`: página de confirmação que recebe `session_id`.
+  - `GET /checkout/cancel`: página de cancelamento/retorno ao carrinho.
+- Geração de URLs:
+  - Use URLs absolutas e públicas (https).
+  - Inclua `{{CHECKOUT_SESSION_ID}}` em `successUrl`:
+    - `successUrl`: `https://loja.com/checkout/success?session_id={{CHECKOUT_SESSION_ID}}`
+    - `cancelUrl`: `https://loja.com/checkout/cancel`
+- Envio para a API:
+  - `POST /api/v1/create-checkout-session` body:
+    ```
+    {
+      "accountId": "acct_123",
+      "priceId": "price_abc",
+      "successUrl": "https://loja.com/checkout/success?session_id={{CHECKOUT_SESSION_ID}}",
+      "cancelUrl": "https://loja.com/checkout/cancel"
+    }
+    ```
+  - `POST /api/v1/subscribe-to-platform` body:
+    ```
+    {
+      "accountId": "acct_123",
+      "successUrl": "https://loja.com/assinatura/ok?session_id={{CHECKOUT_SESSION_ID}}",
+      "cancelUrl": "https://loja.com/assinatura/cancel"
+    }
+    ```
+- Fallback:
+  - Se a loja não enviar `successUrl`/`cancelUrl`, usamos `storeDomain` (se cadastrado) ou a Home/Done da API.
+- Exemplos de rotas na loja:
+  - Node/Express:
+    ```
+    app.get('/checkout/success', (req, res) => {
+      const sessionId = req.query.session_id;
+      res.render('checkout-success', { sessionId });
+    });
+    app.get('/checkout/cancel', (req, res) => {
+      res.render('checkout-cancel');
+    });
+    ```
+  - Django:
+    ```
+    def checkout_success(request):
+        session_id = request.GET.get('session_id')
+        return render(request, 'orders/success.html', {'session_id': session_id})
+    def checkout_cancel(request):
+        return render(request, 'orders/cancel.html')
+    ```
+
 ## Boas Práticas de Integração
 - Sempre validar ownership (`accountId`) do lado do cliente antes de chamar rotas.
 - Tratar `401` e acionar refresh de token automaticamente quando possível.
@@ -407,6 +505,24 @@ Esta documentação descreve todas as rotas públicas da API v1, modelos de aute
 - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `PLATFORM_PRICE_ID`, `DOMAIN`.
 - `JWT_SECRET`, `JWT_ACCESS_TTL_SECONDS`, `JWT_REFRESH_TTL_SECONDS`.
 - Rate Limits: `RATE_LIMIT_DEFAULT`, `RATE_LIMIT_LOGIN`, `RATE_LIMIT_CHECKOUT`, `RATE_LIMIT_WEBHOOK`.
+ - Docs públicas: `DOCS_PUBLIC=1` para acesso sem autenticação; `0` para exigir token.
+ - Liberação de lojas:
+   - `PAYMENTS_EVENTS_SECRET` (HMAC)
+   - `PAYMENTS_EVENTS_PATH` (padrão `/payments/events/`)
+   - `PAYMENTS_EVENTS_HEADER` (padrão `X_PAYMENTS_SIGNATURE`)
 
 ## Compatibilidade
 - Todos os exemplos e formatos estão alinhados com os schemas e fluxos atuais da API.
+
+## Admin e Ferramentas Locais (Somente localhost)
+- Acesso restrito a `127.0.0.1` / `::1`. Úteis para desenvolvimento, inspeção e configuração.
+- Endpoints:
+  - `GET /config` — visão central com variáveis principais e auditoria visual (segredos mascarados).
+  - `GET /config/audit` — auditoria de configurações em JSON com campos: `group`, `key`, `value/masked`, `required`, `ok`, `message`.
+  - `GET /stores` — visão de lojas; edição inline de `storeDomain`, criação e exclusão.
+  - `GET /stores/list` — lista lojas e usuários relacionados.
+  - `GET /stores/get/<account_id>` — detalhes da loja (accountId, userId, email, storeDomain).
+  - `GET /users` — visão de usuários.
+- Observações:
+  - Essas páginas não devem ser expostas publicamente.
+  - `storeDomain` é usado como fallback para `successUrl`/`cancelUrl` e para liberação HMAC.

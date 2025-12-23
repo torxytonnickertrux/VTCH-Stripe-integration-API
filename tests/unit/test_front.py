@@ -17,6 +17,15 @@ def test_docs_renders(client):
     assert "/api/v1/auth/login" in body
 
 @pytest.mark.unit
+def test_config_page_local_only(app_module):
+    c = app_module.app.test_client()
+    r = c.get("/config", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+    assert r.status_code == 200
+    assert "Configuração Local" in r.get_data(as_text=True)
+    r = c.get("/config", environ_overrides={"REMOTE_ADDR": "8.8.8.8"})
+    assert r.status_code == 403
+
+@pytest.mark.unit
 def test_health_and_status_json(app_module, client):
     r = client.get("/health")
     assert r.status_code == 200

@@ -4,22 +4,27 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Stripe Integration API · Hero</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="/static/css/style.css" rel="stylesheet">
 </head>
 <body class="mono dark">
-<div class="tech-header">
-  <div class="header-left">
-    <span class="brand">Stripe Integration API</span>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark" role="navigation" aria-label="Menu principal">
+  <div class="container">
+    <a class="navbar-brand" href="/">Stripe Integration API</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarMain">
+      <ul class="navbar-nav ms-auto">
+        <li class="nav-item"><a class="nav-link active" href="/">Home</a></li>
+        <li class="nav-item"><a class="nav-link" href="/docs">Docs</a></li>
+        <li class="nav-item"><a class="nav-link" href="/config">Config</a></li>
+        <li class="nav-item"><a class="nav-link" href="/stores">Lojas</a></li>
+        <li class="nav-item"><a class="nav-link" href="/users">Usuários</a></li>
+      </ul>
+    </div>
   </div>
-  <div class="header-right">
-    <span class="indicator">SYSTEM.ACTIVE</span>
-    <span class="indicator">API.VERSION {{ api_version }}</span>
-    <span class="indicator">ENV {{ environment }}</span>
-    <span class="indicator" id="latencyIndicator">LAT --ms</span>
-    <span class="indicator status"><span class="dot" id="statusDot"></span> STATUS.ONLINE</span>
-  </div>
-  <div class="header-grid"></div>
-</div>
+ </nav>
 
 <section class="hero">
   <canvas id="heroCanvas"></canvas>
@@ -41,20 +46,61 @@
   </div>
 </section>
 
-<footer class="tech-footer">
-  <div class="footer-indicators">
-    <span class="pulse"></span>
-    <span class="pulse"></span>
-    <span class="pulse"></span>
-    <canvas id="miniMap"></canvas>
+<section class="py-5 bg-dark text-light">
+  <div class="container">
+    <h2 class="h4 mb-4">Tutoriais</h2>
+    <div class="row g-4">
+      <div class="col-lg-6">
+        <div class="card bg-secondary text-light h-100">
+          <div class="card-body">
+            <h3 class="h5">API (Backend)</h3>
+            <p class="small">Fluxos que você chama na API Flask.</p>
+            <ul class="mb-3">
+              <li><a class="link-light" href="/docs#quickstart">Quickstart de autenticação</a></li>
+              <li><a class="link-light" href="/docs#api">Referência da API v1</a></li>
+              <li><a class="link-light" href="/docs#jwt">Autenticação JWT</a></li>
+              <li><a class="link-light" href="/docs#webhooks">Webhooks Stripe</a></li>
+              <li><a class="link-light" href="/docs#post-checkout">Liberação pós-checkout</a></li>
+              <li><a class="link-light" href="/docs#webhook-api">Criar webhook por API</a></li>
+            </ul>
+            <div class="d-flex gap-2">
+              <a class="btn btn-outline-light btn-sm" href="/health">Ping API</a>
+              <a class="btn btn-outline-light btn-sm" href="/status">Status</a>
+              <a class="btn btn-outline-light btn-sm" href="/config">Config</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <div class="card bg-secondary text-light h-100">
+          <div class="card-body">
+            <h3 class="h5">Loja (Frontend do Vendedor)</h3>
+            <p class="small">Como integrar sua loja com a plataforma.</p>
+            <ul class="mb-3">
+              <li><a class="link-light" href="/docs#store-redirect">Redirecionamento pós-pagamento</a></li>
+              <li><a class="link-light" href="/docs#store-release">Liberação HMAC para pedidos</a></li>
+              <li><a class="link-light" href="/docs#api">Criar sessão de checkout</a></li>
+              <li><a class="link-light" href="/stores">Gerenciar lojas (local)</a></li>
+              <li><a class="link-light" href="/local/auth">Login/Conta (local)</a></li>
+            </ul>
+            <div class="d-flex gap-2">
+              <a class="btn btn-outline-light btn-sm" href="/docs#store-redirect">Ver modelo de rotas</a>
+              <a class="btn btn-outline-light btn-sm" href="/docs#store-release">Ver verificador HMAC</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
-  <div class="footer-text">
-    <span>API.VERSION {{ api_version }}</span>
-    <span>ENV {{ environment }}</span>
-    <span>DOMAIN {{ domain }}</span>
+</section>
+
+<footer class="bg-light py-3" role="contentinfo">
+  <div class="container text-center">
+    <small>© Stripe Integration API · API.VERSION {{ api_version }} · ENV {{ environment }} · DOMAIN {{ domain }}</small>
   </div>
 </footer>
 
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script src="/static/js/hero-animation.js"></script>
 <script src="/static/js/home-ui.js"></script>
 </body>

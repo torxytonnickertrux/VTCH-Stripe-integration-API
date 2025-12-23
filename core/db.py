@@ -50,6 +50,23 @@ class WebhookLog(Base):
     payload = Column(Text, nullable=False)
     received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+class StoreDispatch(Base):
+    __tablename__ = "store_dispatch"
+    id = Column(Integer, primary_key=True)
+    event_id = Column(String(255), unique=True, nullable=False)
+    account_id = Column(String(255), nullable=False)
+    order_id = Column(String(255), nullable=True)
+    status = Column(String(64), nullable=True)
+    attempts = Column(Integer, default=0, nullable=False)
+    delivered_at = Column(DateTime, nullable=True)
+
+class OrderCorrelation(Base):
+    __tablename__ = "order_correlation"
+    id = Column(Integer, primary_key=True)
+    order_id = Column(String(255), unique=True, nullable=False)
+    account_id = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     try:
@@ -58,5 +75,10 @@ def init_db():
         if "store_domain" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE stripe_accounts ADD COLUMN store_domain VARCHAR(512)"))
+        # ensure order_correlation exists
+        tables = inspector.get_table_names()
+        if "order_correlation" not in tables:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE TABLE order_correlation (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id VARCHAR(255) UNIQUE NOT NULL, account_id VARCHAR(255) NOT NULL, created_at DATETIME NOT NULL)"))
     except Exception:
         pass
