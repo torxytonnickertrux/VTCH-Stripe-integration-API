@@ -5,7 +5,7 @@ def test_home_renders(client):
     r = client.get("/")
     assert r.status_code == 200
     body = r.get_data(as_text=True)
-    assert "Stripe Integration API" in body
+    assert "VTCH stripe integration API" in body
     assert "Infra de Pagamentos" in body
 
 @pytest.mark.unit
