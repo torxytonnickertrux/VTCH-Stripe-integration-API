@@ -411,20 +411,15 @@ Esta documentação descreve todas as rotas públicas da API v1, modelos de aute
 - Requisitos:
   - A conta conectada deve possuir `storeDomain` cadastrado (enviado ao criar a conta via `POST /api/v1/create-connect-account`).
   - `PAYMENTS_EVENTS_SECRET` definido na API (segredo compartilhado com a loja).
-  - A loja deve expor um endpoint `POST <storeDomain>/payments/events/` aceitando `Content-Type: application/json` e o cabeçalho `X_PAYMENTS_SIGNATURE` com o hexdigest HMAC-SHA256 do corpo.
+  - A loja deve expor um endpoint `POST <storeDomain>/payments/events/` aceitando `Content-Type: application/json` e o cabeçalho `X-Payments-Signature` com o hexdigest HMAC-SHA256 do corpo.
 - Fluxo:
-  - No `checkout.session.completed`, a API monta:
+  - No `checkout.session.completed` (ou `payment_intent.succeeded`), a API monta:
     ```
-    {
-      "id": "<event_id>",
-      "type": "checkout.session.completed",
-      "order_id": "<metadata.orderId | client_reference_id>",
-      "status": "pago"
-    }
+    {"orderId":"<metadata.orderId | client_reference_id>","status":"paid"}
     ```
   - Assina com HMAC (`secret = PAYMENTS_EVENTS_SECRET`) e envia:
     - URL: `<storeDomain>/payments/events/`
-    - Cabeçalho: `X_PAYMENTS_SIGNATURE: <hmac_sha256_hex_do_corpo>`
+    - Cabeçalho: `X-Payments-Signature: <hmac_sha256_hex_do_corpo>`
   - Idempotência: se o `event_id` já foi processado (tabela `webhook_events`), não reenviamos.
 - Exemplo de verificador HMAC (Loja, Python):
   ```
@@ -434,13 +429,13 @@ Esta documentação descreve todas as rotas públicas da API v1, modelos de aute
   @app.route('/payments/events/', methods=['POST'])
   def events():
       body = request.data
-      sig = request.headers.get('X_PAYMENTS_SIGNATURE') or ''
+      sig = request.headers.get('X-Payments-Signature') or ''
       calc = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
       if not hmac.compare_digest(calc, sig):
           return jsonify({'error':'invalid_signature'}), 400
       data = json.loads(body.decode('utf-8'))
-      if data.get('order_id') and data.get('status') == 'pago':
-          # atualizar pedido para 'pago'
+      if data.get('orderId') and data.get('status') == 'paid':
+          # atualizar pedido para 'paid'
           ...
       return jsonify({'status':'ok'})
   ```
@@ -509,7 +504,7 @@ Esta documentação descreve todas as rotas públicas da API v1, modelos de aute
  - Liberação de lojas:
    - `PAYMENTS_EVENTS_SECRET` (HMAC)
    - `PAYMENTS_EVENTS_PATH` (padrão `/payments/events/`)
-   - `PAYMENTS_EVENTS_HEADER` (padrão `X_PAYMENTS_SIGNATURE`)
+  - `PAYMENTS_EVENTS_HEADER` (padrão `X-Payments-Signature`)
 
 ## Compatibilidade
 - Todos os exemplos e formatos estão alinhados com os schemas e fluxos atuais da API.

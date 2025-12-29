@@ -1,4 +1,4 @@
-# Backend SaaS / Marketplace (Flask + Stripe)
+# VTCH stripe integration API — Backend SaaS / Marketplace (Flask + Stripe)
 
 Este projeto implementa uma API robusta para um SaaS financeiro, utilizando Flask e Stripe Connect. A arquitetura foca em segurança, escalabilidade e manutenibilidade, seguindo boas práticas de engenharia de software.
 
@@ -68,7 +68,7 @@ DOCS_PUBLIC=1
 # Liberação Pós-Pagamento (Lojas)
 PAYMENTS_EVENTS_SECRET=changeme-hmac-secret
 PAYMENTS_EVENTS_PATH=/payments/events/
-PAYMENTS_EVENTS_HEADER=X_PAYMENTS_SIGNATURE
+PAYMENTS_EVENTS_HEADER=X-Payments-Signature
 
 # Segurança
 JWT_SECRET=sua_chave_secreta_jwt
@@ -138,12 +138,12 @@ pytest
 ```
 
 ## 🔗 Liberação Pós-Pagamento (HMAC)
-- Ao concluir `checkout.session.completed`, notificamos a loja via `POST <storeDomain>/payments/events/` com corpo JSON e assinatura HMAC-SHA256 no cabeçalho `X_PAYMENTS_SIGNATURE`.
+- Ao concluir `checkout.session.completed` (ou `payment_intent.succeeded`), notificamos a loja via `POST <storeDomain>/payments/events/` com corpo JSON e assinatura HMAC-SHA256 no cabeçalho `X-Payments-Signature`.
 - Para habilitar:
   1) Defina `storeDomain` ao criar a conta conectada (`POST /api/v1/create-connect-account`).
   2) Configure `PAYMENTS_EVENTS_SECRET` na API e o mesmo segredo na loja.
-  3) A loja deve validar a assinatura e atualizar o pedido (`status='pago'`) quando `order_id` estiver presente.
-- Idempotência: eventos repetidos (mesmo `event_id`) não são reenviados.
+  3) A loja deve validar a assinatura e atualizar o pedido (`status='paid'`) quando `orderId` estiver presente.
+- Idempotência: eventos repetidos (mesmo `event_id`) não são reenviados. A API registra o evento e evita reprocessamentos.
 
 ## 📚 Documentação da API
 Consulte [docs/API.md](API.md) para detalhes completos sobre os endpoints, formatos de request/response e códigos de erro.
@@ -154,7 +154,7 @@ Veja também o guia de integração de lojas em [docs/INTEGRACAO_LOJAS.md](INTEG
 - Admin: `/stores`, `/stores/list`, `/stores/get/<account_id>`, `/users`
 - Propósito: inspeção e configuração local, sem exposição de segredos (sempre mascarados).
 
-## � Modelo de Negócio (SaaS + Marketplace)
+## Modelo de Negócio (SaaS + Marketplace)
 
 - A plataforma opera como um intermediador de pagamentos (Marketplace) sobre Stripe Connect: compradores pagam por produtos/serviços ofertados em contas conectadas dos vendedores, enquanto a plataforma orquestra o fluxo, valida ownership e aplica regras de cobrança.
 - Cada usuário autenticado pode criar e gerenciar sua própria conta Stripe Connect pela API v1 (`POST /api/v1/create-connect-account`, `POST /api/v1/create-account-link`, `GET /api/v1/account-status/<account_id>`). O isolamento é multi-tenant: cada usuário só acessa recursos da sua conta.
@@ -163,7 +163,7 @@ Veja também o guia de integração de lojas em [docs/INTEGRACAO_LOJAS.md](INTEG
 
 ### Formas de monetização
 - Assinatura da plataforma: `POST /api/v1/subscribe-to-platform` utiliza `PLATFORM_PRICE_ID` para criar uma sessão de checkout de assinatura (recorrente) na conta da própria plataforma.
-- Taxas por transação: a plataforma pode cobrar uma taxa por operação via `application_fee_amount`.
+- Taxas por transação: a plataforma pode cobrar uma taxa por operação via `application_fee_amount` (atualmente um valor fixo é aplicado pelo backend).
   - Pagamentos avulsos (one-time): taxa aplicada em `payment_intent_data.application_fee_amount`.
   - Assinaturas (recorrentes): taxa aplicada em `subscription_data.application_fee_amount`.
   - Observação: o valor da taxa é definido no backend conforme regras de negócio atuais da API v1.
@@ -183,7 +183,7 @@ Veja também o guia de integração de lojas em [docs/INTEGRACAO_LOJAS.md](INTEG
 - Webhooks em `/webhook` tratam eventos de Checkout/Assinatura com idempotência básica e validação de assinatura.
 - Este documento reflete o comportamento atual da API; não promete funcionalidades além das implementadas (ex.: configuração dinâmica de taxas pelo cliente não está exposta na API v1).
 
-## �🛡️ Decisões Arquiteturais
+## 🛡️ Decisões Arquiteturais
 1.  **Camadas**: Separação clara entre Rotas (server.py), Regras (core/), e Dados (core/db.py).
 2.  **Logs**: Uso de `structlog` para logs JSON, facilitando ingestão por ferramentas como Datadog/ELK.
 3.  **Banco de Dados**: Abstração via SQLAlchemy permite troca transparente entre SQLite (dev) e MySQL (prod).

@@ -4,21 +4,16 @@ Este guia descreve como uma loja cliente deve receber a confirmação de pagamen
 
 ## Requisitos
 - Endpoint público na loja: `POST /payments/events/`
-- Corpo em JSON e cabeçalho `X_PAYMENTS_SIGNATURE` (hexdigest HMAC-SHA256 do corpo)
+- Corpo em JSON e cabeçalho `X-Payments-Signature` (hexdigest HMAC-SHA256 do corpo)
 - Segredo compartilhado com a API (`PAYMENTS_EVENTS_SECRET`)
 
 ## Fluxo
 1. A conta conectada do vendedor é criada com `storeDomain` (ex.: `https://loja.com`).
-2. Após `checkout.session.completed`, a API envia para `<storeDomain>/payments/events/`:
+2. Após `checkout.session.completed` (ou `payment_intent.succeeded`), a API envia para `<storeDomain>/payments/events/`:
    ```json
-   {
-     "id": "evt_...",
-     "type": "checkout.session.completed",
-     "order_id": "ord_123",
-     "status": "pago"
-   }
+   {"orderId":"ord_123","status":"paid"}
    ```
-3. A loja valida o HMAC e, se `status='pago'` e `order_id` presente, atualiza o pedido para pago.
+3. A loja valida o HMAC e, se `status='paid'` e `orderId` presente, atualiza o pedido para pago.
 4. Eventos repetidos (mesmo `id`) devem ser ignorados (idempotência).
 
 ## Redirecionamento Pós-Pagamento
@@ -64,13 +59,13 @@ SECRET = "<PAYMENTS_EVENTS_SECRET>"  # deve ser igual ao configurado na API
 @app.route("/payments/events/", methods=["POST"])
 def events():
     body = request.data
-    sig = request.headers.get("X_PAYMENTS_SIGNATURE") or ""
+    sig = request.headers.get("X-Payments-Signature") or ""
     calc = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(calc, sig):
         return jsonify({"error": "invalid_signature"}), 400
     data = json.loads(body.decode("utf-8"))
-    if data.get("order_id") and data.get("status") == "pago":
-        # atualizar pedido para "pago"
+    if data.get("orderId") and data.get("status") == "paid":
+        # atualizar pedido para "paid"
         # ex.: Order.update_status(order_id, "paid")
         ...
     return jsonify({"status": "ok"})
@@ -80,7 +75,7 @@ def events():
 1. Obtenha `PAYMENTS_EVENTS_SECRET`.
 2. Monte o corpo:
    ```json
-   {"id":"evt_test","type":"checkout.session.completed","order_id":"ord_1","status":"pago"}
+   {"orderId":"ord_1","status":"paid"}
    ```
 3. Gere a assinatura:
    - hexdigest HMAC-SHA256 do corpo usando `PAYMENTS_EVENTS_SECRET`.
@@ -88,14 +83,14 @@ def events():
    ```
    curl -X POST https://loja.com/payments/events/ \
      -H "Content-Type: application/json" \
-     -H "X_PAYMENTS_SIGNATURE: <hmac_hex>" \
-     -d '{"id":"evt_test","type":"checkout.session.completed","order_id":"ord_1","status":"pago"}'
+     -H "X-Payments-Signature: <hmac_hex>" \
+     -d '{"orderId":"ord_1","status":"paid"}'
    ```
 
 ## Checklist de Configuração
 - `PAYMENTS_EVENTS_SECRET`: mesmo valor na API e na loja
 - `PAYMENTS_EVENTS_PATH`: default `/payments/events/`
-- `PAYMENTS_EVENTS_HEADER`: default `X_PAYMENTS_SIGNATURE`
+- `PAYMENTS_EVENTS_HEADER`: default `X-Payments-Signature`
 - `storeDomain` definido ao criar a conta conectada
 
 ## Observações
