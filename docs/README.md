@@ -70,6 +70,11 @@ PAYMENTS_EVENTS_SECRET=changeme-hmac-secret
 PAYMENTS_EVENTS_PATH=/payments/events/
 PAYMENTS_EVENTS_HEADER=X-Payments-Signature
 
+# Recuperação de Webhooks (Sync)
+WEBHOOK_SYNC_ENABLED=0
+WEBHOOK_SYNC_INTERVAL_MINUTES=15
+WEBHOOK_SYNC_LOOKBACK_MINUTES=120
+
 # Segurança
 JWT_SECRET=sua_chave_secreta_jwt
 JWT_ACCESS_TTL_SECONDS=900
@@ -144,6 +149,12 @@ pytest
   2) Configure `PAYMENTS_EVENTS_SECRET` na API e o mesmo segredo na loja.
   3) A loja deve validar a assinatura e atualizar o pedido (`status='paid'`) quando `orderId` estiver presente.
 - Idempotência: eventos repetidos (mesmo `event_id`) não são reenviados. A API registra o evento e evita reprocessamentos.
+
+## 🔄 Recuperação Automática de Webhooks Stripe
+- O sincronizador consulta periodicamente a Stripe por eventos relevantes e reprocessa aqueles não persistidos ou sem entrega à loja.
+- Reutiliza o fluxo do webhook: normalização de status, correlação `orderId → accountId`, despacho HMAC e idempotência.
+- Configurável via `.env`: `WEBHOOK_SYNC_ENABLED`, `WEBHOOK_SYNC_INTERVAL_MINUTES`, `WEBHOOK_SYNC_LOOKBACK_MINUTES`.
+- Disparo manual (apenas localhost): `POST /internal/sync/stripe-events`.
 
 ## 📚 Documentação da API
 Consulte [docs/API.md](API.md) para detalhes completos sobre os endpoints, formatos de request/response e códigos de erro.

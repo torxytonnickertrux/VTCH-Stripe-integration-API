@@ -506,6 +506,18 @@ Esta documentação descreve todas as rotas públicas da API v1, modelos de aute
    - `PAYMENTS_EVENTS_PATH` (padrão `/payments/events/`)
   - `PAYMENTS_EVENTS_HEADER` (padrão `X-Payments-Signature`)
 
+## 🔄 Recuperação Automática de Webhooks Stripe
+- A API executa periodicamente uma sincronização com a Stripe para recuperar eventos não recebidos via webhook.
+- Esse processo:
+  - Consulta a Stripe por eventos recentes (`checkout.session.completed`, `payment_intent.succeeded`) por conta conectada.
+  - Reprocessa apenas eventos não persistidos localmente ou sem entrega à loja.
+  - Reutiliza o mesmo fluxo de liberação pós-pagamento (normalização de status, correlação `orderId → accountId`, HMAC e idempotência).
+  - Garante idempotência total pelo `event_id` e registro de tentativas no `store_dispatch`.
+- Configuração:
+  - `WEBHOOK_SYNC_ENABLED` (1/0), `WEBHOOK_SYNC_INTERVAL_MINUTES`, `WEBHOOK_SYNC_LOOKBACK_MINUTES`.
+- Endpoints internos:
+  - `POST /internal/sync/stripe-events` (apenas localhost) para disparo manual do sincronizador.
+
 ## Compatibilidade
 - Todos os exemplos e formatos estão alinhados com os schemas e fluxos atuais da API.
 

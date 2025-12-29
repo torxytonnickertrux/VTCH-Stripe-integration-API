@@ -37,6 +37,8 @@ import jwt
 import hmac
 import hashlib
 import requests
+from services.webhook_sync import run_sync_once, start_worker
+from sqlalchemy import text
 stripe.api_key = Config.STRIPE_SECRET_KEY
 stripe_client = StripeClient(str(Config.STRIPE_SECRET_KEY))
 app = Flask(__name__)
@@ -881,7 +883,7 @@ def webhook_received():
             if exists:
                 logger.info("webhook_duplicate", request_id=g.get('request_id'), event_id=event['id'])
                 return jsonify({'status': 'duplicate'}), 200
-            db2.add(WebhookEvent(event_id=event['id']))
+            db2.add(WebhookEvent(event_id=event['id'], status=normalized_status, processed_at=None, source="webhook"))
             db2.commit()
         finally:
             db2.close()
@@ -907,57 +909,63 @@ def webhook_received():
                     return jsonify({'status': 'success'}), 200
             finally:
                 dbcorr.close()
-        db3 = SessionLocal()
-        try:
-            acc = db3.query(StripeAccount).filter_by(account_id=acc_id).first()
-            if acc and acc.store_domain and Config.PAYMENTS_EVENTS_SECRET:
-                payload = {
-                    "orderId": order_id,
-                    "status": normalized_status
-                }
-                body = json.dumps(payload, separators=(",", ":"))
-                sig = hmac.new(
-                    Config.PAYMENTS_EVENTS_SECRET.encode("utf-8"),
-                    body.encode("utf-8"),
-                    hashlib.sha256
-                ).hexdigest()
-                ep = acc.store_domain.rstrip("/") + Config.PAYMENTS_EVENTS_PATH
-                headers = {Config.PAYMENTS_EVENTS_HEADER: sig, "Content-Type": "application/json"}
-                dispatch = db3.query(StoreDispatch).filter_by(event_id=event.get("id")).first()
-                if not dispatch:
-                    dispatch = StoreDispatch(event_id=event.get("id"), account_id=acc_id, order_id=order_id, status=normalized_status, attempts=0)
-                    db3.add(dispatch)
-                    db3.commit()
-                logger = structlog.get_logger()
-                attempt = 0
-                delays = [1, 2, 4]
-                resp_ok = False
-                for dly in delays:
-                    attempt += 1
-                    try:
-                        r = requests.post(ep, data=body, headers=headers, timeout=5)
-                        logger.info("store_dispatch_response", request_id=g.get('request_id'), event_id=event['id'], status_code=getattr(r, 'status_code', None))
-                        dispatch.attempts = attempt
-                        if getattr(r, 'status_code', 0) == 200:
-                            resp_ok = True
-                            from datetime import datetime
-                            dispatch.delivered_at = datetime.utcnow()
-                            db3.add(dispatch)
-                            db3.commit()
-                            break
-                    except Exception as e:
-                        logger.info("store_dispatch_retry_scheduled", request_id=g.get('request_id'), event_id=event['id'], attempt=attempt, delay_seconds=dly)
-                        dispatch.attempts = attempt
-                        db3.add(dispatch)
-                        db3.commit()
-                    import time
-                    time.sleep(dly)
-        finally:
-            db3.close()
+        dispatch_store_webhook(acc_id, order_id, normalized_status, event.get("id"))
     else:
         logger.info("webhook_unhandled_type", request_id=g.get('request_id'), event_id=event['id'], event_type=event['type'])
 
     return jsonify({'status': 'success'})
+
+def dispatch_store_webhook(account_id, order_id, status, event_id):
+    db3 = SessionLocal()
+    try:
+        acc = db3.query(StripeAccount).filter_by(account_id=account_id).first()
+        if acc and acc.store_domain and Config.PAYMENTS_EVENTS_SECRET:
+            payload = {"orderId": order_id, "status": status}
+            body = json.dumps(payload, separators=(",", ":"))
+            sig = hmac.new(
+                Config.PAYMENTS_EVENTS_SECRET.encode("utf-8"),
+                body.encode("utf-8"),
+                hashlib.sha256
+            ).hexdigest()
+            ep = acc.store_domain.rstrip("/") + Config.PAYMENTS_EVENTS_PATH
+            headers = {Config.PAYMENTS_EVENTS_HEADER: sig, "Content-Type": "application/json"}
+            dispatch = db3.query(StoreDispatch).filter_by(event_id=event_id).first()
+            if not dispatch:
+                dispatch = StoreDispatch(event_id=event_id, account_id=account_id, order_id=order_id, status=status, attempts=0)
+                db3.add(dispatch)
+                db3.commit()
+            logger = structlog.get_logger()
+            delays = [1, 2, 4]
+            for attempt, dly in enumerate(delays, start=1):
+                try:
+                    r = requests.post(ep, data=body, headers=headers, timeout=5)
+                    logger.info("store_dispatch_response", request_id=g.get('request_id'), event_id=event_id, status_code=getattr(r, 'status_code', None))
+                    dispatch.attempts = attempt
+                    if getattr(r, 'status_code', 0) == 200:
+                        from datetime import datetime
+                        dispatch.delivered_at = datetime.utcnow()
+                        db3.add(dispatch)
+                        db3.commit()
+                        break
+                except Exception:
+                    logger.info("store_dispatch_retry_scheduled", request_id=g.get('request_id'), event_id=event_id, attempt=attempt, delay_seconds=dly)
+                    dispatch.attempts = attempt
+                    db3.add(dispatch)
+                    db3.commit()
+                import time
+                time.sleep(dly)
+        # update processed_at
+        db3.execute(text("UPDATE webhook_events SET processed_at=:ts, order_id=:oid, account_id=:acc, status=:st WHERE event_id=:eid"),
+                    {"ts": datetime.utcnow(), "oid": order_id, "acc": account_id, "st": status, "eid": event_id})
+        db3.commit()
+    finally:
+        db3.close()
+
+@app.route('/internal/sync/stripe-events', methods=['POST'])
+@local_only
+def internal_sync_stripe_events():
+    run_sync_once()
+    return ok({"status": "sync_started"})
 
 @app.route('/api/v1/auth/login', methods=['POST'])
 @limiter.limit(Config.RATE_LIMIT_LOGIN)
@@ -1019,4 +1027,8 @@ def refresh():
 
 if __name__ == '__main__':
     app.rate_limit_identity = None
+    try:
+        start_worker()
+    except Exception:
+        pass
     app.run(port=4242, host="::1", debug=False)

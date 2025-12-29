@@ -21,6 +21,9 @@ class Config:
     RATE_LIMIT_LOGIN = os.getenv("RATE_LIMIT_LOGIN") or "10/minute"
     RATE_LIMIT_CHECKOUT = os.getenv("RATE_LIMIT_CHECKOUT") or "30/minute"
     RATE_LIMIT_WEBHOOK = os.getenv("RATE_LIMIT_WEBHOOK") or "300/minute"
+    WEBHOOK_SYNC_ENABLED = ((os.getenv("WEBHOOK_SYNC_ENABLED") or "0").lower() in ("1", "true", "yes"))
+    WEBHOOK_SYNC_INTERVAL_MINUTES = int(os.getenv("WEBHOOK_SYNC_INTERVAL_MINUTES") or "15")
+    WEBHOOK_SYNC_LOOKBACK_MINUTES = int(os.getenv("WEBHOOK_SYNC_LOOKBACK_MINUTES") or "120")
     DB_DIALECT = os.getenv("DB_DIALECT") or ""
     MYSQL_HOST = os.getenv("MYSQL_HOST") or ""
     MYSQL_PORT = int(os.getenv("MYSQL_PORT") or "3306")
