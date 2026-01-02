@@ -26,6 +26,13 @@ class SubscribePlatformSchema(BaseModel):
 class CreatePortalSessionSchema(BaseModel):
     session_id: str = Field(min_length=1)
 
+class StoreCreateSchema(BaseModel):
+    email: str = Field(min_length=3)
+    storeDomain: Optional[str] = None
+
+class StoreDomainUpdateSchema(BaseModel):
+    storeDomain: str = Field(min_length=8)
+
 def parse_and_validate(schema, data):
     try:
         return schema(**data), None

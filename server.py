@@ -19,6 +19,8 @@ from core.schemas import (
     CreateCheckoutSessionSchema,
     SubscribePlatformSchema,
     CreatePortalSessionSchema,
+    StoreCreateSchema,
+    StoreDomainUpdateSchema,
 )
 from core.db import init_db, SessionLocal, User, StripeAccount, WebhookEvent, WebhookLog, StoreDispatch
 from core.stripe_service import (
@@ -39,15 +41,47 @@ import hashlib
 import requests
 from services.webhook_sync import run_sync_once, start_worker
 from sqlalchemy import text
+from urllib.parse import urlparse
+import ipaddress
 stripe.api_key = Config.STRIPE_SECRET_KEY
 stripe_client = StripeClient(str(Config.STRIPE_SECRET_KEY))
 app = Flask(__name__)
-CORS(app)
+# CORS por ambiente
+try:
+    domain = Config.DOMAIN or ""
+    is_dev = ("localhost" in domain) or ("ngrok" in domain)
+    allowed = "*" if is_dev else [o.strip() for o in (Config.CORS_ALLOWED_ORIGINS or "").split(",") if o.strip()]
+    CORS(app, resources={r"/*": {"origins": allowed or "*"}})
+except Exception:
+    CORS(app)
 configure_logging()
 bind_request_context(app)
 limiter = init_limiter(app)
 init_db()
 app.start_time = time.time()
+def _is_dev_env():
+    d = Config.DOMAIN or ""
+    return ("localhost" in d) or ("ngrok" in d)
+def _validate_store_domain(store_domain):
+    try:
+        p = urlparse(store_domain or "")
+        if p.scheme.lower() != "https":
+            return False, "HTTPS obrigatório"
+        if not p.netloc:
+            return False, "Hostname ausente"
+        if p.path not in ("", "/") or p.query or p.fragment:
+            return False, "URL não deve conter path/query/fragment"
+        host = p.hostname or ""
+        try:
+            ipaddress.ip_address(host)
+            return False, "Hostname não pode ser IP"
+        except Exception:
+            pass
+        if (not _is_dev_env()) and (host in ("localhost",) or host.endswith(".local")):
+            return False, "localhost não permitido em produção"
+        return True, None
+    except Exception as e:
+        return False, "URL inválida"
 def _mask_headers(headers):
     masked = {}
     for k, v in headers.items():
@@ -569,48 +603,7 @@ def create_product():
 @auth_required
 @limiter.limit(Config.RATE_LIMIT_DEFAULT)
 def create_connect_account():
-    data = parse_request_body()
-
-    try:
-        account = stripe_client.v2.core.accounts.create({
-            "display_name": data.get("email"),
-            "contact_email": data.get("email"),
-            "dashboard": "full",
-            "defaults": {
-                "responsibilities": {
-                    "fees_collector": "stripe",
-                    "losses_collector": "stripe",
-                }
-            },
-            "identity": {
-                "country": "BR",
-                "entity_type": "company",
-            },
-            "configuration": {
-                "customer": {},
-                "merchant": {
-                    "capabilities": {
-                        "card_payments": {"requested": True},
-                    }
-                },
-            },
-        })
-        db = SessionLocal()
-        try:
-            if g.get('user_id'):
-                existing = db.query(StripeAccount).filter_by(account_id=account.id).first()
-                if not existing:
-                    db.add(StripeAccount(user_id=int(g.user_id), account_id=account.id, store_domain=data.get("storeDomain")))
-                else:
-                    if data.get("storeDomain"):
-                        existing.store_domain = data.get("storeDomain")
-                        db.add(existing)
-                db.commit()
-        finally:
-            db.close()
-        return jsonify({'accountId': account.id})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return stores_create_user()
 
 @app.route('/api/v1/checkout-session/<session_id>', methods=['GET'])
 @auth_required
@@ -641,26 +634,8 @@ def create_account_link():
     data = parse_request_body()
     account_id = data.get('accountId')
     if not account_id:
-        return jsonify({'error': 'invalid_payload'}), 400
-    if not enforce_account_ownership(account_id):
-        return jsonify({'error': 'forbidden'}), 403
-
-    try:
-        account_link = stripe_client.v2.core.account_links.create({
-            "account": account_id,
-            "use_case": {
-                "type": "account_onboarding",
-                "account_onboarding": {
-                    "configurations": ["merchant", "customer"],
-                    "refresh_url": "https://example.com",
-                    "return_url": f"https://example.com?accountId={account_id}",
-                },
-            },
-        })
-
-        return jsonify({'url': account_link.url})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return error('invalid_payload', 400)
+    return store_onboarding_link_user(account_id)
 
 @app.route('/api/account-status/<account_id>', methods=['GET'])
 @app.route('/api/v1/account-status/<account_id>', methods=['GET'])
@@ -739,20 +714,168 @@ def update_store_domain():
     account_id = data.get('accountId')
     store_domain = data.get('storeDomain')
     if not account_id or not store_domain:
-        return jsonify({'error': 'invalid_payload'}), 400
+        return error('invalid_payload', 400)
+    return store_update_domain_user(account_id)
+
+# --- REST: Stores (Lojas) ---
+@app.route('/api/v1/stores', methods=['GET'])
+@auth_required
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def stores_list_user():
+    db = SessionLocal()
+    try:
+        rows = db.query(StripeAccount).filter_by(user_id=int(g.user_id)).order_by(StripeAccount.id.asc()).all()
+        return jsonify([{'accountId': r.account_id, 'storeDomain': r.store_domain} for r in rows])
+    finally:
+        db.close()
+
+@app.route('/api/v1/stores', methods=['POST'])
+@auth_required
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def stores_create_user():
+    data = parse_request_body()
+    payload, err = parse_and_validate(StoreCreateSchema, data)
+    if err:
+        return error("invalid_payload", 400, message=str(err))
+    email = payload.email
+    store_domain = payload.storeDomain
+    if store_domain:
+        okd, msg = _validate_store_domain(store_domain)
+        if not okd:
+            return error("invalid_store_domain", 400, message=msg)
+    try:
+        account = stripe_client.v2.core.accounts.create({
+            "display_name": email,
+            "contact_email": email,
+            "dashboard": "full",
+            "defaults": {
+                "responsibilities": {
+                    "fees_collector": "stripe",
+                    "losses_collector": "stripe",
+                }
+            },
+            "identity": {
+                "country": "BR",
+                "entity_type": "company",
+            },
+            "configuration": {
+                "customer": {},
+                "merchant": {
+                    "capabilities": {
+                        "card_payments": {"requested": True},
+                    }
+                },
+            },
+        })
+        db = SessionLocal()
+        try:
+            existing = db.query(StripeAccount).filter_by(account_id=account.id).first()
+            if not existing:
+                db.add(StripeAccount(user_id=int(g.user_id), account_id=account.id, store_domain=store_domain))
+            else:
+                if store_domain:
+                    existing.store_domain = store_domain
+                    db.add(existing)
+            db.commit()
+        finally:
+            db.close()
+        return jsonify({'accountId': account.id, 'storeDomain': store_domain})
+    except Exception as e:
+        return error("internal_error", 500, message=str(e))
+
+@app.route('/api/v1/stores/<account_id>', methods=['GET'])
+@auth_required
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def store_get_user(account_id):
     if not enforce_account_ownership(account_id):
-        return jsonify({'error': 'forbidden'}), 403
+        return error("forbidden", 403, message="ownership violada")
     db = SessionLocal()
     try:
         acc = db.query(StripeAccount).filter_by(user_id=int(g.user_id), account_id=account_id).first()
         if not acc:
-            return jsonify({'error': 'account_not_found'}), 404
+            return error("account_not_found", 404)
+        return jsonify({'accountId': acc.account_id, 'storeDomain': acc.store_domain})
+    finally:
+        db.close()
+
+@app.route('/api/v1/stores/<account_id>', methods=['DELETE'])
+@auth_required
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def store_delete_user(account_id):
+    if not enforce_account_ownership(account_id):
+        return error("forbidden", 403, message="ownership violada")
+    db = SessionLocal()
+    try:
+        acc = db.query(StripeAccount).filter_by(user_id=int(g.user_id), account_id=account_id).first()
+        if not acc:
+            return error("account_not_found", 404)
+        db.delete(acc)
+        db.commit()
+        return jsonify({'status': 'deleted', 'accountId': account_id})
+    finally:
+        db.close()
+
+@app.route('/api/v1/stores/<account_id>/domain', methods=['PUT'])
+@auth_required
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def store_update_domain_user(account_id):
+    data = parse_request_body()
+    payload, err = parse_and_validate(StoreDomainUpdateSchema, data)
+    if err:
+        return error("invalid_payload", 400, message=str(err))
+    store_domain = payload.storeDomain
+    okd, msg = _validate_store_domain(store_domain)
+    if not okd:
+        return error("invalid_store_domain", 400, message=msg)
+    if not enforce_account_ownership(account_id):
+        return error("forbidden", 403, message="ownership violada")
+    db = SessionLocal()
+    try:
+        acc = db.query(StripeAccount).filter_by(user_id=int(g.user_id), account_id=account_id).first()
+        if not acc:
+            return error("account_not_found", 404)
         acc.store_domain = store_domain
         db.add(acc)
         db.commit()
         return jsonify({'status': 'updated', 'accountId': account_id, 'storeDomain': store_domain})
     finally:
         db.close()
+
+@app.route('/api/v1/stores/<account_id>/onboarding-link', methods=['POST'])
+@auth_required
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def store_onboarding_link_user(account_id):
+    if not enforce_account_ownership(account_id):
+        return error("forbidden", 403, message="ownership violada")
+    try:
+        account_link = stripe_client.v2.core.account_links.create({
+            "account": account_id,
+            "use_case": {
+                "type": "account_onboarding",
+                "account_onboarding": {
+                    "configurations": ["merchant", "customer"],
+                    "refresh_url": "https://example.com",
+                    "return_url": f"https://example.com?accountId={account_id}",
+                },
+            },
+        })
+        return jsonify({'url': account_link.url})
+    except Exception as e:
+        return error("internal_error", 500, message=str(e))
+
+# --- REST helpers reuse ---
+
+@app.route('/api/v1/stores/<account_id>/status', methods=['GET'])
+@auth_required
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def store_status_user(account_id):
+    return account_status(account_id)
+
+@app.route('/api/v1/stores/<account_id>/products', methods=['GET'])
+@auth_required
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def store_products_user(account_id):
+    return get_products(account_id)
 @app.route('/api/subscribe-to-platform', methods=['POST'])
 @app.route('/api/v1/subscribe-to-platform', methods=['POST'])
 @auth_required

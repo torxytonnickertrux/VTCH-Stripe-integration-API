@@ -35,35 +35,35 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   const me = await apiFetch("/api/v1/me");
   if (me.status !== 200) { window.location.href = "/auth"; return; }
-  document.getElementById("meSummary").textContent = `Usuário: ${me.body.email} | Contas: ${me.body.accounts.length}`;
-  renderStores(me.body.accounts);
+  const stores = await apiFetch("/api/v1/stores");
+  document.getElementById("meSummary").textContent = `Usuário: ${me.body.email} | Contas: ${Array.isArray(stores.body) ? stores.body.length : 0}`;
+  renderStores(stores.body || []);
   document.getElementById("createStoreBtn")?.addEventListener("click", async () => {
     const email = document.getElementById("newStoreEmail").value;
     const storeDomain = document.getElementById("newStoreDomain").value;
-    const r = await apiFetch("/api/v1/create-connect-account", { method: "POST", body: JSON.stringify({ email, storeDomain }) });
+    const r = await apiFetch("/api/v1/stores", { method: "POST", body: JSON.stringify({ email, storeDomain }) });
     document.getElementById("createStoreResult").textContent = r.status === 200 ? `Conta criada: ${r.body.accountId}` : (r.body?.error || "Erro");
-    const me2 = await apiFetch("/api/v1/me"); renderStores(me2.body.accounts);
+    const stores2 = await apiFetch("/api/v1/stores"); renderStores(stores2.body || []);
   });
   document.querySelector("#storesTable")?.addEventListener("click", async (e) => {
     const btn = e.target.closest("button"); if (!btn) return;
     const id = btn.dataset.id;
     const action = btn.dataset.action;
     if (action === "onboard") {
-      const r = await apiFetch("/api/v1/create-account-link", { method: "POST", body: JSON.stringify({ accountId: id }) });
+      const r = await apiFetch(`/api/v1/stores/${id}/onboarding-link`, { method: "POST" });
       if (r.status === 200 && r.body.url) window.open(r.body.url, "_blank");
       else alert(r.body?.error || "Erro");
     } else if (action === "status") {
-      const r = await apiFetch(`/api/v1/account-status/${id}`);
+      const r = await apiFetch(`/api/v1/stores/${id}/status`);
       if (r.status === 200) alert(`Payouts: ${r.body.payoutsEnabled}, Charges: ${r.body.chargesEnabled}, Details: ${r.body.detailsSubmitted}`);
       else alert(r.body?.error || "Erro");
     } else if (action === "update-domain") {
       const val = prompt("Novo domínio da loja (https://loja.com):");
       if (!val) return;
-      const r = await apiFetch("/api/v1/update-store-domain", { method: "POST", body: JSON.stringify({ accountId: id, storeDomain: val }) });
+      const r = await apiFetch(`/api/v1/stores/${id}/domain`, { method: "PUT", body: JSON.stringify({ storeDomain: val }) });
       if (r.status === 200) {
-        const me3 = await apiFetch("/api/v1/me"); renderStores(me3.body.accounts);
+        const stores3 = await apiFetch("/api/v1/stores"); renderStores(stores3.body || []);
       } else alert(r.body?.error || "Erro");
     }
   });
 });
-

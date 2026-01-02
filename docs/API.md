@@ -287,6 +287,29 @@ Esta documentação descreve todas as rotas públicas da API v1, modelos de aute
 - `POST /api/v1/create-portal-session` — abre billing portal.
 - `POST /webhook` — recebe eventos Stripe.
 
+## Lojas (REST consolidado)
+
+Endpoints REST (estáveis):
+- `GET  /api/v1/stores` — lista lojas (contas conectadas) do usuário.
+- `POST /api/v1/stores` — cria conta Stripe Connect (payload: `email`, opcional `storeDomain`).
+- `GET  /api/v1/stores/:id` — detalhes (`accountId`, `storeDomain`).
+- `PUT  /api/v1/stores/:id/domain` — atualiza `storeDomain` com validação forte (HTTPS, hostname válido).
+- `GET  /api/v1/stores/:id/status` — status/capabilities/requirements.
+- `POST /api/v1/stores/:id/onboarding-link` — link de onboarding.
+- `DELETE /api/v1/stores/:id` — remove vínculo (opcional).
+
+Compatibilidade (deprecated, chamam as novas):
+- `POST /api/v1/create-connect-account` → `POST /api/v1/stores`
+- `POST /api/v1/create-account-link` → `POST /api/v1/stores/:id/onboarding-link`
+- `GET  /api/v1/account-status/<account_id>` → `GET /api/v1/stores/:id/status`
+- `POST /api/v1/update-store-domain` → `PUT /api/v1/stores/:id/domain`
+
+Erros padronizados:
+```json
+{ "error": "forbidden", "code": "FORBIDDEN", "message": "ownership violada" }
+```
+Validação de domínio (produção): obrigatório `https`, sem path/query/fragment, hostname não-IP e não `localhost`.
+
 ## Exemplos de Uso
 
 ### Criar produto + preço
