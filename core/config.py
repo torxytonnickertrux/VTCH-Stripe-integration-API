@@ -23,6 +23,7 @@ class Config:
     RATE_LIMIT_WEBHOOK = os.getenv("RATE_LIMIT_WEBHOOK") or "300/minute"
     LIMITER_STORAGE_URL = os.getenv("LIMITER_STORAGE_URL") or ""
     CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS") or ""
+    ADMIN_EMAILS = os.getenv("ADMIN_EMAILS") or ""
     WEBHOOK_SYNC_ENABLED = ((os.getenv("WEBHOOK_SYNC_ENABLED") or "0").lower() in ("1", "true", "yes"))
     WEBHOOK_SYNC_INTERVAL_MINUTES = int(os.getenv("WEBHOOK_SYNC_INTERVAL_MINUTES") or "15")
     WEBHOOK_SYNC_LOOKBACK_MINUTES = int(os.getenv("WEBHOOK_SYNC_LOOKBACK_MINUTES") or "120")

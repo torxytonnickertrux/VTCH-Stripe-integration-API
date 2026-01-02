@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, UniqueConstraint, DateTime, Text, inspect, text
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, UniqueConstraint, DateTime, Text, inspect, text, Boolean
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from datetime import datetime
 from core.config import Config
@@ -12,6 +12,7 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
+    is_admin = Column(Boolean, nullable=False, default=False)
     stripe_accounts = relationship("StripeAccount", back_populates="user")
 
 class StripeAccount(Base):
@@ -87,6 +88,11 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     try:
         inspector = inspect(engine)
+        # add is_admin to users if missing
+        ucols = [c["name"] for c in inspector.get_columns("users")]
+        if "is_admin" not in ucols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0 NOT NULL"))
         cols = [c["name"] for c in inspector.get_columns("stripe_accounts")]
         if "store_domain" not in cols:
             with engine.begin() as conn:

@@ -30,6 +30,7 @@ def auth_required(fn):
             claims = decode_token(parts[1])
             g.user_id = claims.get("sub")
             g.stripe_account_id = claims.get("stripe_account_id")
+            g.is_admin = bool(claims.get("is_admin"))
             try:
                 current_app.rate_limit_identity = g.user_id or None
             except Exception:

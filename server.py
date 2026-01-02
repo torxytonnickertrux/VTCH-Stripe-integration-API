@@ -566,6 +566,15 @@ def enforce_account_ownership(account_id):
         return True if exists else False
     finally:
         db.close()
+def admin_required(fn):
+    @wraps(fn)
+    def _inner(*args, **kwargs):
+        def _check():
+            if not bool(getattr(g, "is_admin", False)):
+                return error("forbidden", 403, message="admin requerido")
+            return fn(*args, **kwargs)
+        return auth_required(_check)()
+    return _inner
 
 @app.route('/api/create-product', methods=['POST'])
 @app.route('/api/v1/create-product', methods=['POST'])
@@ -1135,8 +1144,8 @@ def login():
         if not user or not check_password_hash(user.password_hash, password):
             return jsonify({'error': 'invalid_credentials'}), 401
         account = db.query(StripeAccount).filter_by(user_id=user.id).first()
-        access = generate_access_token(str(user.id), {'stripe_account_id': account.account_id if account else None})
-        refresh = generate_refresh_token(str(user.id), {'stripe_account_id': account.account_id if account else None})
+        access = generate_access_token(str(user.id), {'stripe_account_id': account.account_id if account else None, 'is_admin': bool(getattr(user, "is_admin", False))})
+        refresh = generate_refresh_token(str(user.id), {'stripe_account_id': account.account_id if account else None, 'is_admin': bool(getattr(user, "is_admin", False))})
         return jsonify({'access_token': access, 'refresh_token': refresh})
     finally:
         db.close()
@@ -1154,7 +1163,8 @@ def register():
         exists = db.query(User).filter_by(email=email).first()
         if exists:
             return jsonify({'error': 'email_in_use'}), 400
-        user = User(email=email, password_hash=generate_password_hash(password))
+        admin_emails = [e.strip().lower() for e in (Config.ADMIN_EMAILS or "").split(",") if e.strip()]
+        user = User(email=email, password_hash=generate_password_hash(password), is_admin=(email.lower() in admin_emails))
         db.add(user)
         db.commit()
         return jsonify({'status': 'registered'})
@@ -1174,10 +1184,268 @@ def refresh():
             return jsonify({'error': 'unauthorized'}), 401
         sub = claims.get('sub')
         stripe_account_id = claims.get('stripe_account_id')
-        access = generate_access_token(sub, {'stripe_account_id': stripe_account_id})
+        is_admin = bool(claims.get('is_admin'))
+        access = generate_access_token(sub, {'stripe_account_id': stripe_account_id, 'is_admin': is_admin})
         return jsonify({'access_token': access})
     except Exception:
         return jsonify({'error': 'unauthorized'}), 401
+
+# --- Admin UI (seguro) ---
+@app.route('/admin/ui/stores', methods=['GET'])
+def admin_ui_stores():
+    return admin_required(lambda: render_template('stores.html'))()
+
+@app.route('/admin/ui/stores/<account_id>', methods=['GET'])
+def admin_ui_store_detail(account_id):
+    return admin_required(lambda: render_template('store_detail.html', account_id=account_id))()
+
+@app.route('/admin/ui/users', methods=['GET'])
+def admin_ui_users():
+    return admin_required(lambda: render_template('users.html'))()
+
+# --- Admin API (seguro) ---
+@app.route('/api/v1/admin/stores/list', methods=['GET'])
+def admin_stores_list_api():
+    @admin_required
+    def _exec():
+        db = SessionLocal()
+        try:
+            rows = db.query(StripeAccount, User).join(User, StripeAccount.user_id == User.id).all()
+            data = []
+            for acc, user in rows:
+                data.append({
+                    'accountId': acc.account_id,
+                    'userId': user.id,
+                    'email': user.email,
+                    'storeDomain': acc.store_domain
+                })
+            return ok({'stores': data})
+        finally:
+            db.close()
+    return _exec()
+
+@app.route('/api/v1/admin/stores/get/<account_id>', methods=['GET'])
+def admin_stores_get_api(account_id):
+    @admin_required
+    def _exec():
+        db = SessionLocal()
+        try:
+            acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+            if not acc:
+                return error('account_not_found', 404)
+            user = db.query(User).filter_by(id=acc.user_id).first()
+            return ok({
+                'accountId': acc.account_id,
+                'userId': acc.user_id,
+                'email': user.email if user else None,
+                'storeDomain': acc.store_domain
+            })
+        finally:
+            db.close()
+    return _exec()
+
+@app.route('/api/v1/admin/stores/dispatches/<account_id>', methods=['GET'])
+def admin_stores_dispatches_api(account_id):
+    @admin_required
+    def _exec():
+        db = SessionLocal()
+        try:
+            rows = db.query(StoreDispatch).filter_by(account_id=account_id).order_by(StoreDispatch.id.desc()).limit(200).all()
+            data = []
+            for d in rows:
+                data.append({
+                    'eventId': d.event_id,
+                    'orderId': d.order_id,
+                    'status': d.status,
+                    'attempts': d.attempts,
+                    'deliveredAt': d.delivered_at.isoformat() if d.delivered_at else None
+                })
+            return ok({'dispatches': data})
+        finally:
+            db.close()
+    return _exec()
+
+@app.route('/api/v1/admin/stores/webhooks/<account_id>', methods=['GET'])
+def admin_stores_webhooks_api(account_id):
+    @admin_required
+    def _exec():
+        db = SessionLocal()
+        try:
+            rows = db.query(WebhookLog).order_by(WebhookLog.id.desc()).limit(400).all()
+            data = []
+            for w in rows:
+                try:
+                    ev = json.loads(w.payload)
+                    if ev.get('account') == account_id:
+                        data.append({
+                            'eventId': ev.get('id'),
+                            'type': ev.get('type'),
+                            'receivedAt': w.received_at.isoformat() if w.received_at else None
+                        })
+                except Exception:
+                    pass
+            return ok({'webhooks': data})
+        finally:
+            db.close()
+    return _exec()
+
+@app.route('/api/v1/admin/users/list', methods=['GET'])
+def admin_users_list_api():
+    @admin_required
+    def _exec():
+        db = SessionLocal()
+        try:
+            rows = db.query(User).order_by(User.id.asc()).all()
+            return ok({'users': [{'id': u.id, 'email': u.email} for u in rows]})
+        finally:
+            db.close()
+    return _exec()
+
+@app.route('/api/v1/admin/users/<int:user_id>/stores', methods=['GET'])
+def admin_user_stores_api(user_id):
+    @admin_required
+    def _exec():
+        db = SessionLocal()
+        try:
+            rows = db.query(StripeAccount).filter_by(user_id=user_id).all()
+            return ok({'stores': [{'accountId': a.account_id, 'storeDomain': a.store_domain} for a in rows]})
+        finally:
+            db.close()
+    return _exec()
+
+@app.route('/api/v1/admin/stores/update', methods=['POST'])
+def admin_stores_update_post_api():
+    @admin_required
+    def _exec():
+        data = parse_request_body()
+        account_id = data.get('accountId')
+        store_domain = data.get('storeDomain')
+        if not account_id or not store_domain:
+            return error('invalid_payload', 400)
+        db = SessionLocal()
+        try:
+            acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+            if not acc:
+                return error('account_not_found', 404)
+            acc.store_domain = store_domain
+            db.add(acc)
+            db.commit()
+            return ok({'status': 'updated', 'accountId': account_id, 'storeDomain': store_domain})
+        finally:
+            db.close()
+    return _exec()
+
+@app.route('/api/v1/admin/stores/upsert', methods=['POST'])
+def admin_stores_upsert_api():
+    @admin_required
+    def _exec():
+        data = parse_request_body()
+        user_id = data.get('userId')
+        account_id = data.get('accountId')
+        store_domain = data.get('storeDomain')
+        if not user_id or not account_id:
+            return error('invalid_payload', 400)
+        db = SessionLocal()
+        try:
+            acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+            if acc:
+                acc.store_domain = store_domain
+                db.add(acc)
+                db.commit()
+                return ok({'status': 'updated', 'accountId': account_id, 'storeDomain': store_domain})
+            u = db.query(User).filter_by(id=user_id).first()
+            if not u:
+                return error('user_not_found', 404)
+            acc = StripeAccount(user_id=user_id, account_id=account_id, store_domain=store_domain)
+            db.add(acc)
+            db.commit()
+            return ok({'status': 'created', 'accountId': account_id, 'storeDomain': store_domain})
+        finally:
+            db.close()
+    return _exec()
+
+@app.route('/api/v1/admin/stores/create', methods=['POST'])
+def admin_stores_create_api():
+    @admin_required
+    def _exec():
+        data = parse_request_body()
+        user_id = data.get('userId')
+        email = data.get('email')
+        store_domain = data.get('storeDomain')
+        if not user_id or not email:
+            return error('invalid_payload', 400)
+        payload = {
+            "display_name": email,
+            "contact_email": email,
+            "dashboard": "full",
+            "defaults": {
+                "responsibilities": {
+                    "fees_collector": "stripe",
+                    "losses_collector": "stripe",
+                }
+            },
+            "identity": {
+                "country": "BR",
+                "entity_type": "company",
+            },
+            "configuration": {
+                "customer": {},
+                "merchant": {
+                    "capabilities": {
+                        "card_payments": {"requested": True},
+                    }
+                },
+            },
+        }
+        db = SessionLocal()
+        try:
+            u = db.query(User).filter_by(id=int(user_id)).first()
+            if not u:
+                return error('user_not_found', 404)
+            acct = stripe_client.v2.core.accounts.create(payload)
+            db.add(StripeAccount(user_id=u.id, account_id=acct.id, store_domain=store_domain))
+            db.commit()
+            return ok({'status': 'created', 'accountId': acct.id, 'storeDomain': store_domain, 'userId': u.id})
+        finally:
+            db.close()
+    return _exec()
+
+@app.route('/api/v1/admin/stores/update/<account_id>', methods=['PUT'])
+def admin_stores_update_api(account_id):
+    @admin_required
+    def _exec():
+        data = parse_request_body()
+        store_domain = data.get('storeDomain')
+        if not store_domain:
+            return error('invalid_payload', 400)
+        db = SessionLocal()
+        try:
+            acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+            if not acc:
+                return error('account_not_found', 404)
+            acc.store_domain = store_domain
+            db.add(acc)
+            db.commit()
+            return ok({'status': 'updated', 'accountId': account_id, 'storeDomain': store_domain})
+        finally:
+            db.close()
+    return _exec()
+
+@app.route('/api/v1/admin/stores/delete/<account_id>', methods=['DELETE'])
+def admin_stores_delete_api(account_id):
+    @admin_required
+    def _exec():
+        db = SessionLocal()
+        try:
+            acc = db.query(StripeAccount).filter_by(account_id=account_id).first()
+            if not acc:
+                return error('account_not_found', 404)
+            db.delete(acc)
+            db.commit()
+            return ok({'status': 'deleted', 'accountId': account_id})
+        finally:
+            db.close()
+    return _exec()
 
 if __name__ == '__main__':
     app.rate_limit_identity = None
