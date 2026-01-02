@@ -790,7 +790,10 @@ def stores_create_user():
             db.close()
         return jsonify({'accountId': account.id, 'storeDomain': store_domain})
     except Exception as e:
-        return error("internal_error", 500, message=str(e))
+        m = str(e)
+        if ("invalid_v2_key" in m) or ("malformed API Key" in m):
+            return error("invalid_v2_key", 500, message="Chave Stripe v2 inválida ou truncada. Verifique STRIPE_SECRET_KEY.")
+        return error("internal_error", 500, message=m)
 
 @app.route('/api/v1/stores/<account_id>', methods=['GET'])
 @auth_required
@@ -870,7 +873,10 @@ def store_onboarding_link_user(account_id):
         })
         return jsonify({'url': account_link.url})
     except Exception as e:
-        return error("internal_error", 500, message=str(e))
+        m = str(e)
+        if ("invalid_v2_key" in m) or ("malformed API Key" in m):
+            return error("invalid_v2_key", 500, message="Chave Stripe v2 inválida ou truncada. Verifique STRIPE_SECRET_KEY.")
+        return error("internal_error", 500, message=m)
 
 # --- REST helpers reuse ---
 
