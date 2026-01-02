@@ -463,6 +463,14 @@ def docs():
         return render_template('docs.html')
     return auth_required(lambda: render_template('docs.html'))()
 
+@app.route('/auth', methods=['GET'])
+def auth_view():
+    return render_template('auth.html')
+
+@app.route('/app', methods=['GET'])
+def app_view():
+    return auth_required(lambda: render_template('app.html'))()
+
 @app.route('/health', methods=['GET'])
 @limiter.exempt
 def health():
@@ -722,6 +730,29 @@ def get_products(account_id):
         return jsonify(products)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/v1/update-store-domain', methods=['POST'])
+@auth_required
+@limiter.limit(Config.RATE_LIMIT_DEFAULT)
+def update_store_domain():
+    data = parse_request_body()
+    account_id = data.get('accountId')
+    store_domain = data.get('storeDomain')
+    if not account_id or not store_domain:
+        return jsonify({'error': 'invalid_payload'}), 400
+    if not enforce_account_ownership(account_id):
+        return jsonify({'error': 'forbidden'}), 403
+    db = SessionLocal()
+    try:
+        acc = db.query(StripeAccount).filter_by(user_id=int(g.user_id), account_id=account_id).first()
+        if not acc:
+            return jsonify({'error': 'account_not_found'}), 404
+        acc.store_domain = store_domain
+        db.add(acc)
+        db.commit()
+        return jsonify({'status': 'updated', 'accountId': account_id, 'storeDomain': store_domain})
+    finally:
+        db.close()
 @app.route('/api/subscribe-to-platform', methods=['POST'])
 @app.route('/api/v1/subscribe-to-platform', methods=['POST'])
 @auth_required

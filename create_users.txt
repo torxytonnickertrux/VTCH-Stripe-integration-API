@@ -1,0 +1,105 @@
+toolName: CompactFake
+            
+status: success
+          
+          
+
+        
+            
+toolName: search_codebase
+            
+status: success
+          
+query: High-level: user creation / registration flow. Find functions, routes, or services that create a user record, particularly by an API owner/admin.
+          
+
+        
+            
+toolName: search_codebase
+            
+status: success
+          
+query: Find the `User` model definition and any helper functions used in user creation: `User`, `generate_password_hash`, `parse_request_body`, `ok`, `error`, `local_only`, `auth_required`. Provide file locations.
+          
+
+        
+            
+toolName: search_codebase
+            
+status: success
+          
+query: Find login and refresh routes to complete auth flow for context on user creation. Also helper functions: generate_password_hash.
+          
+**Visão Geral**
+- Há dois caminhos para criação de usuário:
+  - Público (auto-serviço): `POST /api/v1/auth/register` para qualquer cliente.
+  - Interno/Admin (owner): `POST /admin/users/create` restrito a acesso local via `local_only`.
+- O modelo `User` possui `email` único e `password_hash`; a senha nunca é armazenada em texto puro.
+- O fluxo de login/refresh completa a jornada pós-criação com JWT e claims opcionais de `stripe_account_id`.
+
+**Modelo de Dados**
+- `core/db.py:10` define `User` com `id`, `email` (único), `password_hash` e relação com `StripeAccount`.
+
+**Criação Pública (`/api/v1/auth/register`)**
+- Localização: `d:\Documentos\projetos\python\integracao_srtipe\server.py:989`
+- Fluxo:
+  - Lê `email` e `password` do corpo (`parse_request_body`).
+  - Valida presença; retorna `400` se inválido.
+  - Verifica duplicidade: `db.query(User).filter_by(email=email).first()`.
+  - Gera `password_hash` com `generate_password_hash(password)`.
+  - Persiste `User` e `commit`.
+  - Responde `{"status":"registered"}`.
+- Uso típico:
+  - Após registrar, o cliente chama `POST /api/v1/auth/login` para obter `access_token` e `refresh_token` (ver `server.py:963`).
+
+**Criação Interna/Admin (`/admin/users/create`)**
+- Localização: `d:\Documentos\projetos\python\integracao_srtipe\server.py:361`
+- Restrição: decorado com `@local_only` (apenas localhost), pensado para o dono da API.
+- Fluxo idêntico ao público, mas resposta inclui `id` e `email`:
+  - Valida payload.
+  - Bloqueia `email` duplicado com `409`.
+  - Cria `User` com `password_hash`, faz `commit`.
+  - Responde `{"status":"created","id":...,"email":...}`.
+- UI interna:
+  - `GET /users` renderiza painel administrativo com formulário de criação (`templates/users.html:33`) e JS (`static/js/users.js`).
+  - `GET /local/auth` contém formulário de registro e login local para teste (`templates/local_auth.html:34`).
+
+**Login e Refresh**
+- Login: `server.py:963`
+  - Valida credenciais com `check_password_hash`.
+  - Emite `access_token` e `refresh_token` via `core/auth.py:1`.
+  - Se o usuário já tem uma `StripeAccount`, inclui `stripe_account_id` nas claims.
+- Refresh: `server.py:1009`
+  - Exige header `Authorization: Bearer <refresh_token>`.
+  - Reemite apenas `access_token`.
+
+**Exemplos de Requisição (Windows)**
+- Público (registro):
+  ```
+  curl -X POST http://localhost:4242/api/v1/auth/register ^
+    -H "Content-Type: application/json" ^
+    -d "{\"email\":\"user@example.com\",\"password\":\"secret\"}"
+  ```
+- Admin/Owner (criação interna, apenas localhost):
+  ```
+  curl -X POST http://localhost:4242/admin/users/create ^
+    -H "Content-Type: application/json" ^
+    -d "{\"email\":\"seller@example.com\",\"password\":\"secret\"}"
+  ```
+- Login:
+  ```
+  curl -X POST http://localhost:4242/api/v1/auth/login ^
+    -H "Content-Type: application/json" ^
+    -d "{\"email\":\"user@example.com\",\"password\":\"secret\"}"
+  ```
+
+**Integração com Stripe (pós-criação)**
+- O owner pode criar uma conta conectada para o usuário:
+  - Admin: `POST /admin/stores/create` com `userId`, `email`, `storeDomain` (`server.py:259`).
+  - Público (pelo próprio usuário): `POST /api/v1/create-connect-account` (`server.py:564`), amarrado ao `user_id` do token.
+
+**Resumo Prático**
+- Dono da API usa `/admin/users/create` para cadastrar usuários internamente; protegido por `local_only`.
+- Usuários podem se auto-registrar via `/api/v1/auth/register`.
+- Senhas sempre são armazenadas como hash.
+- Após criação, o login emite JWTs; se houver `StripeAccount` vinculada, o token carrega `stripe_account_id` para facilitar ownership e autorização em rotas de conta.
