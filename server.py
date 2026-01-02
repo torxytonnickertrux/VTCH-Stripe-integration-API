@@ -503,7 +503,7 @@ def auth_view():
 
 @app.route('/app', methods=['GET'])
 def app_view():
-    return auth_required(lambda: render_template('app.html'))()
+    return render_template('app.html')
 
 @app.route('/health', methods=['GET'])
 @limiter.exempt
