@@ -102,6 +102,29 @@ def _collect_post_payload():
     if raw:
         payload["raw"] = raw[:2000]
     return payload
+def _stripe_v2_error(e):
+    m = str(e)
+    if ("invalid_v2_key" in m) or ("malformed API Key" in m):
+        return error("invalid_v2_key", 401, message="Chave Stripe v2 inválida ou truncada. Verifique STRIPE_SECRET_KEY.")
+    try:
+        import stripe as _s
+        if isinstance(e, _s.error.AuthenticationError):
+            return error("stripe_auth_error", 401, message=getattr(e, "user_message", None) or m)
+        if isinstance(e, _s.error.InvalidRequestError):
+            return error("invalid_request", 400, message=getattr(e, "user_message", None) or m)
+        if isinstance(e, _s.error.PermissionError):
+            return error("forbidden", 403, message=getattr(e, "user_message", None) or m)
+        if isinstance(e, _s.error.RateLimitError):
+            return error("rate_limit", 429, message=getattr(e, "user_message", None) or m)
+        if isinstance(e, _s.error.APIConnectionError):
+            return error("api_connection_error", 502, message=getattr(e, "user_message", None) or m)
+        if isinstance(e, _s.error.APIError):
+            return error("stripe_api_error", 500, message=getattr(e, "user_message", None) or m)
+        if hasattr(_s.error, "IdempotencyError") and isinstance(e, _s.error.IdempotencyError):
+            return error("idempotency_error", 400, message=getattr(e, "user_message", None) or m)
+    except Exception:
+        pass
+    return error("internal_error", 500, message=m)
 @app.before_request
 def _log_incoming_post():
     if request.method == "POST":
@@ -478,7 +501,10 @@ def admin_user_store_create(user_id):
         u = db.query(User).filter_by(id=user_id).first()
         if not u:
             return jsonify({'error': 'user_not_found'}), 404
-        acct = stripe_client.v2.core.accounts.create(payload)
+        try:
+            acct = stripe_client.v2.core.accounts.create(payload)
+        except Exception as e:
+            return _stripe_v2_error(e)
         db.add(StripeAccount(user_id=user_id, account_id=acct.id, store_domain=store_domain))
         db.commit()
         return jsonify({'status': 'created', 'accountId': acct.id, 'storeDomain': store_domain})
@@ -605,7 +631,7 @@ def create_product():
             'type': 'recurring' if recurring_interval else 'one_time'
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return _stripe_v2_error(e)
 
 @app.route('/api/create-connect-account', methods=['POST'])
 @app.route('/api/v1/create-connect-account', methods=['POST'])
@@ -790,10 +816,7 @@ def stores_create_user():
             db.close()
         return jsonify({'accountId': account.id, 'storeDomain': store_domain})
     except Exception as e:
-        m = str(e)
-        if ("invalid_v2_key" in m) or ("malformed API Key" in m):
-            return error("invalid_v2_key", 500, message="Chave Stripe v2 inválida ou truncada. Verifique STRIPE_SECRET_KEY.")
-        return error("internal_error", 500, message=m)
+        return _stripe_v2_error(e)
 
 @app.route('/api/v1/stores/<account_id>', methods=['GET'])
 @auth_required
@@ -873,10 +896,7 @@ def store_onboarding_link_user(account_id):
         })
         return jsonify({'url': account_link.url})
     except Exception as e:
-        m = str(e)
-        if ("invalid_v2_key" in m) or ("malformed API Key" in m):
-            return error("invalid_v2_key", 500, message="Chave Stripe v2 inválida ou truncada. Verifique STRIPE_SECRET_KEY.")
-        return error("internal_error", 500, message=m)
+        return _stripe_v2_error(e)
 
 # --- REST helpers reuse ---
 
@@ -1111,8 +1131,8 @@ def dispatch_store_webhook(account_id, order_id, status, event_id):
                     logger.info("store_dispatch_response", request_id=g.get('request_id'), event_id=event_id, status_code=getattr(r, 'status_code', None))
                     dispatch.attempts = attempt
                     if getattr(r, 'status_code', 0) == 200:
-                        from datetime import datetime
-                        dispatch.delivered_at = datetime.utcnow()
+                        from datetime import datetime, UTC
+                        dispatch.delivered_at = datetime.now(UTC)
                         db3.add(dispatch)
                         db3.commit()
                         break
@@ -1124,8 +1144,9 @@ def dispatch_store_webhook(account_id, order_id, status, event_id):
                 import time
                 time.sleep(dly)
         # update processed_at
+        from datetime import datetime, UTC
         db3.execute(text("UPDATE webhook_events SET processed_at=:ts, order_id=:oid, account_id=:acc, status=:st WHERE event_id=:eid"),
-                    {"ts": datetime.utcnow(), "oid": order_id, "acc": account_id, "st": status, "eid": event_id})
+                    {"ts": datetime.now(UTC), "oid": order_id, "acc": account_id, "st": status, "eid": event_id})
         db3.commit()
     finally:
         db3.close()
@@ -1408,7 +1429,10 @@ def admin_stores_create_api():
             u = db.query(User).filter_by(id=int(user_id)).first()
             if not u:
                 return error('user_not_found', 404)
-            acct = stripe_client.v2.core.accounts.create(payload)
+            try:
+                acct = stripe_client.v2.core.accounts.create(payload)
+            except Exception as e:
+                return _stripe_v2_error(e)
             db.add(StripeAccount(user_id=u.id, account_id=acct.id, store_domain=store_domain))
             db.commit()
             return ok({'status': 'created', 'accountId': acct.id, 'storeDomain': store_domain, 'userId': u.id})
